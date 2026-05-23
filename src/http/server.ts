@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
-import { runWithRequestContext } from '../context/request-context';
+import { runWithRequestContext, type ContextForgeIdentity } from '../context/request-context';
 import { extractContextForgeIdentity } from '../contextforge/identity';
 import type { LinkedTokenStore } from '../storage/LinkedTokenStore';
 import { registerTools } from '../tools';
@@ -34,6 +34,7 @@ interface SessionTransport {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
   allowsAnonymousDiscovery: boolean;
+  identity?: ContextForgeIdentity | undefined;
 }
 
 function createMcpServer(
@@ -219,6 +220,7 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
       const sessionId = getHeader(req, 'mcp-session-id');
       let body: unknown;
       let requestAllowsMissingIdentity = false;
+      const existingSessionTransport = sessionId ? transports.get(sessionId) : undefined;
 
       if (req.method === 'POST') {
         const rawBody = await readRawBody(req, maxBodyBytes);
@@ -241,7 +243,7 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
         requireIdentity: boolean;
         requireSignature: boolean;
       } = {
-        requireIdentity: options.requireIdentity && !requestAllowsMissingIdentity,
+        requireIdentity: options.requireIdentity && !requestAllowsMissingIdentity && existingSessionTransport?.identity === undefined,
         requireSignature: options.requireIdentitySignature,
       };
       if (options.identityClaimsSecret !== undefined) {
@@ -251,7 +253,19 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
         identityOptions.contextForgeJwtSecret = options.contextForgeJwtSecret;
       }
 
-      const identity = extractContextForgeIdentity(req.headers, identityOptions);
+      let identity = extractContextForgeIdentity(req.headers, identityOptions);
+      if (
+        identity !== undefined
+        && existingSessionTransport?.identity !== undefined
+        && existingSessionTransport.identity.id !== identity.id
+      ) {
+        throw new MCPError(ErrorCode.AUTH_FAILED, 'ContextForge identity cannot change within an MCP session');
+      }
+      if (identity === undefined && existingSessionTransport?.identity !== undefined) {
+        identity = existingSessionTransport.identity;
+      } else if (identity !== undefined && existingSessionTransport !== undefined) {
+        existingSessionTransport.identity = identity;
+      }
       const authSession = identity ? options.tokenStore.getSession(identity.id) : undefined;
       const requestContext: {
         identity?: NonNullable<typeof identity>;
@@ -288,6 +302,7 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
                   transport,
                   server,
                   allowsAnonymousDiscovery,
+                  identity,
                 });
               },
               onsessionclosed: (closedSessionId: string): void => {

@@ -305,6 +305,117 @@ describe('HTTP MCP server hardening', () => {
     expect(JSON.stringify(parseMcpBody(response.body))).toContain('No Vikunja token is linked');
   });
 
+  it('reuses verified ContextForge identity from the MCP session when later POSTs omit bearer auth', async () => {
+    const tokenStore = {
+      getSession: jest.fn(),
+      getStatus: jest.fn().mockReturnValue({ linked: false }),
+    } as unknown as LinkedTokenStore;
+    server = await startHttpServer(createOptions({
+      tokenStore,
+      requireIdentity: true,
+      requireIdentitySignature: true,
+      contextForgeJwtSecret: 'contextforge-jwt-secret',
+    }));
+
+    const initializeResponse = await request(
+      server,
+      'POST',
+      '/mcp',
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'contextforge-probe', version: '0.0.0' },
+        },
+      }),
+      {
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${contextForgeJwt('cricket@happyvertical.com', 'contextforge-jwt-secret')}`,
+        'content-type': 'application/json',
+      },
+    );
+
+    const response = await request(
+      server,
+      'POST',
+      '/mcp',
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'vikunja_auth_status',
+          arguments: {},
+        },
+      }),
+      {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        'mcp-session-id': String(initializeResponse.headers['mcp-session-id']),
+      },
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect((tokenStore.getStatus as jest.Mock)).toHaveBeenCalledWith('cricket@happyvertical.com');
+    expect(JSON.stringify(parseMcpBody(response.body))).toContain('No Vikunja token is linked');
+  });
+
+  it('rejects ContextForge identity switches within one MCP session', async () => {
+    server = await startHttpServer(createOptions({
+      requireIdentity: true,
+      requireIdentitySignature: true,
+      contextForgeJwtSecret: 'contextforge-jwt-secret',
+    }));
+
+    const initializeResponse = await request(
+      server,
+      'POST',
+      '/mcp',
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'contextforge-probe', version: '0.0.0' },
+        },
+      }),
+      {
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${contextForgeJwt('cricket@happyvertical.com', 'contextforge-jwt-secret')}`,
+        'content-type': 'application/json',
+      },
+    );
+
+    const response = await request(
+      server,
+      'POST',
+      '/mcp',
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'vikunja_auth_status',
+          arguments: {},
+        },
+      }),
+      {
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${contextForgeJwt('will@happyvertical.com', 'contextforge-jwt-secret')}`,
+        'content-type': 'application/json',
+        'mcp-session-id': String(initializeResponse.headers['mcp-session-id']),
+      },
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect(JSON.parse(response.body).error.message).toBe('ContextForge identity cannot change within an MCP session');
+  });
+
   it('does not expose the webhook endpoint without a configured secret', async () => {
     const updateHub = {
       broadcastWebhook: jest.fn(),
