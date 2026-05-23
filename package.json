@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "start:http": "MCP_TRANSPORT=http node dist/index.js",
     "build": "node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc",
     "test": "jest --silent",
     "test:watch": "jest --watch --silent",
@@ -45,12 +46,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/democratize-technology/vikunja-mcp.git"
+    "url": "git+https://github.com/willgriffin/vikunja-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/democratize-technology/vikunja-mcp/issues"
+    "url": "https://github.com/willgriffin/vikunja-mcp/issues"
   },
-  "homepage": "https://github.com/democratize-technology/vikunja-mcp#readme",
+  "homepage": "https://github.com/willgriffin/vikunja-mcp#readme",
   "publishConfig": {
     "access": "public"
   },

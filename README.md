@@ -99,6 +99,36 @@ Then configure your MCP client:
 }
 ```
 
+### Option 3: ContextForge Streamable HTTP
+
+This fork can also run as a Streamable HTTP MCP server behind ContextForge. In this mode, ContextForge forwards signed user identity headers and each user links their own Vikunja API token once. Vikunja API writes then use that user's token, preserving Vikunja actor attribution for kanban board updates and webhooks.
+
+```bash
+MCP_TRANSPORT=http \
+PORT=3333 \
+VIKUNJA_URL=https://tasks.example.com/api/v1 \
+TOKEN_ENCRYPTION_KEY=replace-with-random-secret \
+IDENTITY_CLAIMS_SECRET=shared-contextforge-claims-secret \
+VIKUNJA_WEBHOOK_SECRET=replace-with-random-secret \
+node dist/index.js
+```
+
+Required ContextForge mode environment:
+
+- `TOKEN_ENCRYPTION_KEY`: encrypts linked per-user Vikunja tokens in SQLite.
+- `IDENTITY_CLAIMS_SECRET`: verifies `X-Forwarded-User-Claims-Signature` from ContextForge.
+- `VIKUNJA_WEBHOOK_SECRET`: verifies Vikunja webhook deliveries.
+- `TOKEN_STORE_PATH`: optional SQLite path, default `/data/vikunja-mcp.sqlite`.
+- `VIKUNJA_MCP_WEBHOOK_URL`: optional URL registered in Vikunja project webhooks.
+
+ContextForge users use these tools:
+
+- `link_vikunja_token`: validate and store the current user's Vikunja API token.
+- `vikunja_auth_status`: check whether the current ContextForge user has a linked token.
+- `unlink_vikunja_token`: remove the linked token.
+- `watch_project_updates`: subscribe the current MCP session to project updates via webhooks plus polling fallback.
+- `unwatch_project_updates`: remove project update subscriptions.
+
 ## Configuration
 
 ### Logging Configuration

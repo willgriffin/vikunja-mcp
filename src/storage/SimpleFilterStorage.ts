@@ -292,6 +292,7 @@ export class FilterStorageManager {
         logger.error('Failed to cleanup inactive sessions', { error: error instanceof Error ? error.message : String(error) });
       });
     }, this.CLEANUP_INTERVAL_MS);
+    this.cleanupInterval.unref();
   }
 
   private async cleanupInactiveSessions(): Promise<void> {
