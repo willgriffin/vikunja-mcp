@@ -1,4 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { createHash } from 'node:crypto';
 import type { AuthSession } from '../types';
 import type { ContextForgeIdentity } from '../context/request-context';
 import { logger } from '../utils/logger';
@@ -52,10 +53,22 @@ const WATCHED_EVENTS = [
   'project.shared.team',
 ];
 
+const DEFAULT_POLLING_INTERVAL_MS = 30000;
+
+function safePollingIntervalMs(value: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_POLLING_INTERVAL_MS;
+}
+
 export class VikunjaUpdateHub {
   private readonly subscriptions = new Map<string, UpdateSubscription>();
+  private readonly options: VikunjaUpdateHubOptions;
 
-  constructor(private readonly options: VikunjaUpdateHubOptions) {}
+  constructor(options: VikunjaUpdateHubOptions) {
+    this.options = {
+      ...options,
+      pollingIntervalMs: safePollingIntervalMs(options.pollingIntervalMs),
+    };
+  }
 
   subscribe(subscription: Omit<UpdateSubscription, 'lastAccessCheck'>): void {
     const key = this.subscriptionKey(subscription.sessionId, subscription.projectId);
@@ -246,7 +259,14 @@ export class VikunjaUpdateHub {
   }
 
   private fingerprintTasks(tasks: unknown[]): string {
-    const summary = tasks.map((task) => {
+    const hash = createHash('sha256');
+    const sortedTasks = [...tasks].sort((left, right) => {
+      const leftTask = left as { id?: number };
+      const rightTask = right as { id?: number };
+      return Number(leftTask.id ?? 0) - Number(rightTask.id ?? 0);
+    });
+
+    for (const task of sortedTasks) {
       const value = task as {
         id?: number;
         updated?: string;
@@ -254,16 +274,22 @@ export class VikunjaUpdateHub {
         done?: boolean;
         assignees?: unknown[];
       };
-      return {
-        id: value.id,
-        updated: value.updated,
-        bucket_id: value.bucket_id,
-        done: value.done,
-        assignees: value.assignees,
-      };
-    });
+      const assignees = Array.isArray(value.assignees)
+        ? value.assignees.map((assignee) => {
+          const candidate = assignee as {
+            id?: string | number;
+            username?: string;
+            email?: string;
+            name?: string;
+          };
+          return String(candidate.id ?? candidate.username ?? candidate.email ?? candidate.name ?? '');
+        }).sort().join(',')
+        : '';
 
-    return JSON.stringify(summary.sort((left, right) => Number(left.id ?? 0) - Number(right.id ?? 0)));
+      hash.update(`${value.id ?? ''}|${value.updated ?? ''}|${value.bucket_id ?? ''}|${value.done ?? ''}|${assignees}\n`);
+    }
+
+    return hash.digest('hex');
   }
 
   private webhookPayloadToUpdate(payload: unknown): VikunjaUpdateEvent | undefined {

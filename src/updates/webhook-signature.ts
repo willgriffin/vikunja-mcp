@@ -6,7 +6,7 @@ export function verifyVikunjaWebhookSignature(
   secret: string | undefined,
 ): boolean {
   if (!secret) {
-    return true;
+    return false;
   }
 
   const providedSignature = Array.isArray(signature) ? signature[0] : signature;

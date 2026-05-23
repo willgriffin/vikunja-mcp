@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -26,6 +26,7 @@ export interface HttpRuntimeOptions {
   requireIdentity: boolean;
   requireIdentitySignature: boolean;
   webhookSecret?: string;
+  maxBodyBytes?: number;
 }
 
 interface SessionTransport {
@@ -65,10 +66,29 @@ function isInitializeMessage(body: unknown): boolean {
   return isInitializeRequest(body);
 }
 
-async function readRawBody(req: IncomingMessage): Promise<string> {
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+
+async function readRawBody(req: IncomingMessage, maxBodyBytes: number): Promise<string> {
+  const contentLength = Number(req.headers['content-length']);
+  if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
+    throw new MCPError(
+      ErrorCode.REQUEST_TOO_LARGE,
+      `Request body exceeds maximum size of ${maxBodyBytes} bytes`,
+    );
+  }
+
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of req as AsyncIterable<Buffer | string>) {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+    totalBytes += buffer.length;
+    if (totalBytes > maxBodyBytes) {
+      throw new MCPError(
+        ErrorCode.REQUEST_TOO_LARGE,
+        `Request body exceeds maximum size of ${maxBodyBytes} bytes`,
+      );
+    }
+    chunks.push(buffer);
   }
   return Buffer.concat(chunks).toString('utf8');
 }
@@ -108,6 +128,9 @@ function jsonRpcError(message: string, code = -32603): unknown {
 
 function statusForError(error: unknown): number {
   if (error instanceof MCPError) {
+    if (error.code === ErrorCode.REQUEST_TOO_LARGE) {
+      return 413;
+    }
     if (error.code === ErrorCode.AUTH_REQUIRED || error.code === ErrorCode.AUTH_FAILED) {
       return 401;
     }
@@ -122,8 +145,9 @@ function statusForError(error: unknown): number {
   return 500;
 }
 
-export async function startHttpServer(options: HttpRuntimeOptions): Promise<void> {
+export async function startHttpServer(options: HttpRuntimeOptions): Promise<Server> {
   const transports = new Map<string, SessionTransport>();
+  const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -139,7 +163,12 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<void
         return;
       }
 
-      const rawBody = await readRawBody(req);
+      if (!options.webhookSecret) {
+        writeText(res, 404, 'not found');
+        return;
+      }
+
+      const rawBody = await readRawBody(req, maxBodyBytes);
       if (!verifyVikunjaWebhookSignature(rawBody, req.headers['x-vikunja-signature'], options.webhookSecret)) {
         writeText(res, 401, 'invalid signature');
         return;
@@ -190,8 +219,16 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<void
 
       await runWithRequestContext(requestContext, async () => {
         if (req.method === 'POST') {
-          const rawBody = await readRawBody(req);
-          const body = rawBody.length > 0 ? JSON.parse(rawBody) as unknown : undefined;
+          const rawBody = await readRawBody(req, maxBodyBytes);
+          let body: unknown;
+          if (rawBody.length > 0) {
+            try {
+              body = JSON.parse(rawBody) as unknown;
+            } catch {
+              writeJson(res, 400, jsonRpcError('Parse error', -32700));
+              return;
+            }
+          }
 
           let sessionTransport: SessionTransport | undefined;
           if (sessionId) {
@@ -262,7 +299,18 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<void
   };
 
   const httpServer = createServer((req, res) => {
-    void handleRequest(req, res);
+    handleRequest(req, res).catch((error: unknown) => {
+      logger.warn('Unhandled HTTP MCP request failure', { error });
+      if (!res.headersSent) {
+        writeJson(
+          res,
+          statusForError(error),
+          jsonRpcError(error instanceof Error ? error.message : 'Internal server error'),
+        );
+        return;
+      }
+      res.destroy(error instanceof Error ? error : undefined);
+    });
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -274,4 +322,5 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<void
   });
 
   logger.info(`Vikunja MCP HTTP server listening on ${options.host}:${options.port}`);
+  return httpServer;
 }

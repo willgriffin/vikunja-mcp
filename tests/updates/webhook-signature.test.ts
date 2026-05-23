@@ -16,8 +16,8 @@ describe('Vikunja webhook signature verification', () => {
     expect(verifyVikunjaWebhookSignature(body, '00', 'vikunja-webhook-secret')).toBe(false);
   });
 
-  it('allows unsigned webhooks only when no secret is configured', () => {
-    expect(verifyVikunjaWebhookSignature('{}', undefined, undefined)).toBe(true);
+  it('rejects unsigned webhooks when no secret is configured', () => {
+    expect(verifyVikunjaWebhookSignature('{}', undefined, undefined)).toBe(false);
     expect(verifyVikunjaWebhookSignature('{}', undefined, 'vikunja-webhook-secret')).toBe(false);
   });
 });

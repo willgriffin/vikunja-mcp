@@ -73,6 +73,20 @@ if (process.env.VIKUNJA_URL && process.env.VIKUNJA_API_TOKEN) {
   logger.info(`Using detected auth type: ${detectedAuthType}`);
 }
 
+function parsePositiveIntegerEnv(value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim() === '') {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    logger.warn(`Invalid positive integer environment value "${value}", using ${fallback}`);
+    return fallback;
+  }
+
+  return Math.floor(parsed);
+}
+
 async function main(): Promise<void> {
   await factoryInitializationPromise;
 
@@ -87,7 +101,7 @@ async function main(): Promise<void> {
       webhookTargetUrl?: string;
       webhookSecret?: string;
     } = {
-      pollingIntervalMs: Number(process.env.VIKUNJA_POLL_INTERVAL_MS ?? '30000'),
+      pollingIntervalMs: parsePositiveIntegerEnv(process.env.VIKUNJA_POLL_INTERVAL_MS, 30000),
     };
     if (process.env.VIKUNJA_MCP_WEBHOOK_URL !== undefined) {
       updateHubOptions.webhookTargetUrl = process.env.VIKUNJA_MCP_WEBHOOK_URL;
