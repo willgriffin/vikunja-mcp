@@ -1,12 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
-import { runWithRequestContext } from '../context/request-context';
-import { extractContextForgeIdentity } from '../contextforge/identity';
+import { runWithRequestContext, type ContextForgeIdentity } from '../context/request-context';
+import { extractContextForgeIdentity, extractContextForgeIdentityFromMeta } from '../contextforge/identity';
 import type { LinkedTokenStore } from '../storage/LinkedTokenStore';
 import { registerTools } from '../tools';
 import { registerContextForgeTools } from '../tools/contextforge';
@@ -23,6 +24,7 @@ export interface HttpRuntimeOptions {
   tokenStore: LinkedTokenStore;
   updateHub: VikunjaUpdateHub;
   identityClaimsSecret?: string;
+  contextForgeJwtSecret?: string;
   requireIdentity: boolean;
   requireIdentitySignature: boolean;
   webhookSecret?: string;
@@ -33,6 +35,13 @@ interface SessionTransport {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
   allowsAnonymousDiscovery: boolean;
+  identity?: ContextForgeIdentity | undefined;
+}
+
+interface SseSessionTransport {
+  transport: SSEServerTransport;
+  server: McpServer;
+  identity?: ContextForgeIdentity | undefined;
 }
 
 function createMcpServer(
@@ -88,6 +97,36 @@ function isIdentityOptionalMessage(body: unknown): boolean {
     }
     return IDENTITY_OPTIONAL_METHODS.has(message.method);
   });
+}
+
+function getJsonRpcMeta(message: unknown): unknown {
+  if (!isJsonRpcObject(message)) {
+    return undefined;
+  }
+  const params = (message as { params?: unknown }).params;
+  if (typeof params !== 'object' || params === null) {
+    return undefined;
+  }
+  return (params as { _meta?: unknown })._meta;
+}
+
+function identityFromJsonRpcMeta(body: unknown): ContextForgeIdentity | undefined {
+  const messages = Array.isArray(body) ? body : [body];
+  let identity: ContextForgeIdentity | undefined;
+
+  for (const message of messages) {
+    const messageIdentity = extractContextForgeIdentityFromMeta(getJsonRpcMeta(message));
+    if (!messageIdentity) {
+      continue;
+    }
+
+    if (identity && identity.id !== messageIdentity.id) {
+      throw new MCPError(ErrorCode.AUTH_FAILED, 'ContextForge _meta.user cannot change within one MCP request');
+    }
+    identity = messageIdentity;
+  }
+
+  return identity;
 }
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -169,8 +208,78 @@ function statusForError(error: unknown): number {
   return 500;
 }
 
+function createIdentityOptions(
+  options: HttpRuntimeOptions,
+  requestAllowsMissingIdentity: boolean,
+  sessionIdentity: ContextForgeIdentity | undefined,
+  metaIdentity: ContextForgeIdentity | undefined,
+): {
+  claimsSecret?: string;
+  contextForgeJwtSecret?: string;
+  requireIdentity: boolean;
+  requireSignature: boolean;
+} {
+  const identityOptions: {
+    claimsSecret?: string;
+    contextForgeJwtSecret?: string;
+    requireIdentity: boolean;
+    requireSignature: boolean;
+  } = {
+    requireIdentity: options.requireIdentity
+      && !requestAllowsMissingIdentity
+      && sessionIdentity === undefined
+      && metaIdentity === undefined,
+    requireSignature: options.requireIdentitySignature,
+  };
+  if (options.identityClaimsSecret !== undefined) {
+    identityOptions.claimsSecret = options.identityClaimsSecret;
+  }
+  if (options.contextForgeJwtSecret !== undefined) {
+    identityOptions.contextForgeJwtSecret = options.contextForgeJwtSecret;
+  }
+  return identityOptions;
+}
+
+function resolveIdentityForRequest(
+  req: IncomingMessage,
+  identityOptions: ReturnType<typeof createIdentityOptions>,
+  sessionIdentity: ContextForgeIdentity | undefined,
+  metaIdentity: ContextForgeIdentity | undefined,
+): ContextForgeIdentity | undefined {
+  let identity = extractContextForgeIdentity(req.headers, identityOptions) ?? metaIdentity;
+  if (identity !== undefined && sessionIdentity !== undefined && sessionIdentity.id !== identity.id) {
+    throw new MCPError(ErrorCode.AUTH_FAILED, 'ContextForge identity cannot change within an MCP session');
+  }
+  if (identity === undefined && sessionIdentity !== undefined) {
+    identity = sessionIdentity;
+  }
+  return identity;
+}
+
+function createRequestContext(
+  identity: ContextForgeIdentity | undefined,
+  tokenStore: LinkedTokenStore,
+): {
+  identity?: ContextForgeIdentity;
+  authSession?: NonNullable<ReturnType<LinkedTokenStore['getSession']>>;
+} {
+  const authSession = identity ? tokenStore.getSession(identity.id) : undefined;
+  const requestContext: {
+    identity?: ContextForgeIdentity;
+    authSession?: NonNullable<typeof authSession>;
+  } = {};
+  if (identity !== undefined) {
+    requestContext.identity = identity;
+  }
+  if (authSession !== undefined) {
+    requestContext.authSession = authSession;
+  }
+  return requestContext;
+}
+
 export async function startHttpServer(options: HttpRuntimeOptions): Promise<Server> {
   const transports = new Map<string, SessionTransport>();
+  const sseTransports = new Map<string, SseSessionTransport>();
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -209,6 +318,80 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
       return;
     }
 
+    if (url.pathname === '/sse') {
+      if (req.method !== 'GET') {
+        writeText(res, 405, 'method not allowed');
+        return;
+      }
+
+      const identityOptions = createIdentityOptions(options, true, undefined, undefined);
+      const identity = resolveIdentityForRequest(req, identityOptions, undefined, undefined);
+      const server = createMcpServer(
+        options.authManager,
+        options.clientFactory,
+        options.tokenStore,
+        options.updateHub,
+      );
+      const transport = new SSEServerTransport('/message', res);
+      sseTransports.set(transport.sessionId, { transport, server, identity });
+      transport.onclose = (): void => {
+        options.updateHub.unsubscribe(transport.sessionId);
+        sseTransports.delete(transport.sessionId);
+      };
+      await runWithRequestContext(createRequestContext(identity, options.tokenStore), async () => {
+        await server.connect(transport);
+      });
+      return;
+    }
+
+    if (url.pathname === '/message') {
+      if (req.method !== 'POST') {
+        writeText(res, 405, 'method not allowed');
+        return;
+      }
+
+      const sessionId = url.searchParams.get('sessionId') ?? undefined;
+      if (!sessionId) {
+        writeJson(res, 400, jsonRpcError('Missing SSE session id', -32000));
+        return;
+      }
+
+      const sessionTransport = sseTransports.get(sessionId);
+      if (!sessionTransport) {
+        writeJson(res, 404, jsonRpcError('Invalid SSE session id', -32001));
+        return;
+      }
+
+      const rawBody = await readRawBody(req, maxBodyBytes);
+      let body: unknown;
+      if (rawBody.length > 0) {
+        try {
+          body = JSON.parse(rawBody) as unknown;
+        } catch {
+          writeJson(res, 400, jsonRpcError('Parse error', -32700));
+          return;
+        }
+      }
+
+      const requestAllowsMissingIdentity = isIdentityOptionalMessage(body);
+      const metaIdentity = identityFromJsonRpcMeta(body);
+      const identityOptions = createIdentityOptions(
+        options,
+        requestAllowsMissingIdentity,
+        sessionTransport.identity,
+        metaIdentity,
+      );
+      const identity = resolveIdentityForRequest(req, identityOptions, sessionTransport.identity, metaIdentity);
+      if (identity !== undefined) {
+        sessionTransport.identity = identity;
+      }
+
+      await runWithRequestContext(createRequestContext(identity, options.tokenStore), async () => {
+        await sessionTransport.transport.handlePostMessage(req, res, body);
+      });
+      return;
+    }
+
     if (url.pathname !== '/mcp') {
       writeText(res, 404, 'not found');
       return;
@@ -218,6 +401,7 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
       const sessionId = getHeader(req, 'mcp-session-id');
       let body: unknown;
       let requestAllowsMissingIdentity = false;
+      const existingSessionTransport = sessionId ? transports.get(sessionId) : undefined;
 
       if (req.method === 'POST') {
         const rawBody = await readRawBody(req, maxBodyBytes);
@@ -234,30 +418,18 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
         requestAllowsMissingIdentity = transports.get(sessionId)?.allowsAnonymousDiscovery === true;
       }
 
-      const identityOptions: {
-        claimsSecret?: string;
-        requireIdentity: boolean;
-        requireSignature: boolean;
-      } = {
-        requireIdentity: options.requireIdentity && !requestAllowsMissingIdentity,
-        requireSignature: options.requireIdentitySignature,
-      };
-      if (options.identityClaimsSecret !== undefined) {
-        identityOptions.claimsSecret = options.identityClaimsSecret;
+      const metaIdentity = identityFromJsonRpcMeta(body);
+      const identityOptions = createIdentityOptions(
+        options,
+        requestAllowsMissingIdentity,
+        existingSessionTransport?.identity,
+        metaIdentity,
+      );
+      const identity = resolveIdentityForRequest(req, identityOptions, existingSessionTransport?.identity, metaIdentity);
+      if (identity !== undefined && existingSessionTransport !== undefined) {
+        existingSessionTransport.identity = identity;
       }
-
-      const identity = extractContextForgeIdentity(req.headers, identityOptions);
-      const authSession = identity ? options.tokenStore.getSession(identity.id) : undefined;
-      const requestContext: {
-        identity?: NonNullable<typeof identity>;
-        authSession?: NonNullable<typeof authSession>;
-      } = {};
-      if (identity !== undefined) {
-        requestContext.identity = identity;
-      }
-      if (authSession !== undefined) {
-        requestContext.authSession = authSession;
-      }
+      const requestContext = createRequestContext(identity, options.tokenStore);
 
       await runWithRequestContext(requestContext, async () => {
         if (req.method === 'POST') {
@@ -283,6 +455,7 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
                   transport,
                   server,
                   allowsAnonymousDiscovery,
+                  identity,
                 });
               },
               onsessionclosed: (closedSessionId: string): void => {

@@ -119,6 +119,7 @@ async function main(): Promise<void> {
       tokenStore: LinkedTokenStore;
       updateHub: VikunjaUpdateHub;
       identityClaimsSecret?: string;
+      contextForgeJwtSecret?: string;
       requireIdentity: boolean;
       requireIdentitySignature: boolean;
       webhookSecret?: string;
@@ -136,6 +137,9 @@ async function main(): Promise<void> {
     }
     if (process.env.IDENTITY_CLAIMS_SECRET !== undefined) {
       httpOptions.identityClaimsSecret = process.env.IDENTITY_CLAIMS_SECRET;
+    }
+    if (process.env.CONTEXTFORGE_JWT_SECRET !== undefined) {
+      httpOptions.contextForgeJwtSecret = process.env.CONTEXTFORGE_JWT_SECRET;
     }
     if (process.env.VIKUNJA_WEBHOOK_SECRET !== undefined) {
       httpOptions.webhookSecret = process.env.VIKUNJA_WEBHOOK_SECRET;
