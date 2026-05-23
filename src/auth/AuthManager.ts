@@ -6,6 +6,7 @@
 import type { AuthSession } from '../types';
 import { MCPError, ErrorCode } from '../types';
 import { logger } from '../utils/logger';
+import { getRequestAuthSession, hasRequestContext } from '../context/request-context';
 
 export class AuthManager {
   private session: AuthSession | null = null;
@@ -49,6 +50,18 @@ export class AuthManager {
    * @throws MCPError if not authenticated
    */
   getSession(): AuthSession {
+    const requestSession = getRequestAuthSession();
+    if (requestSession) {
+      return requestSession;
+    }
+
+    if (hasRequestContext()) {
+      throw new MCPError(
+        ErrorCode.AUTH_REQUIRED,
+        'No Vikunja token is linked for this ContextForge user. Use link_vikunja_token first.',
+      );
+    }
+
     if (!this.session) {
       throw new MCPError(
         ErrorCode.AUTH_REQUIRED,
@@ -62,6 +75,10 @@ export class AuthManager {
    * Check if authenticated
    */
   isAuthenticated(): boolean {
+    if (hasRequestContext()) {
+      return getRequestAuthSession() !== undefined;
+    }
+
     return this.session !== null;
   }
 
@@ -76,6 +93,23 @@ export class AuthManager {
    * Get auth status
    */
   getStatus(): { authenticated: boolean; apiUrl?: string; userId?: string; authType?: 'api-token' | 'jwt' } {
+    const requestSession = getRequestAuthSession();
+    if (requestSession) {
+      const status: { authenticated: boolean; apiUrl?: string; userId?: string; authType?: 'api-token' | 'jwt' } = {
+        authenticated: true,
+        apiUrl: requestSession.apiUrl,
+        authType: requestSession.authType,
+      };
+      if (requestSession.userId !== undefined) {
+        status.userId = requestSession.userId;
+      }
+      return status;
+    }
+
+    if (hasRequestContext()) {
+      return { authenticated: false };
+    }
+
     if (!this.session) {
       return { authenticated: false };
     }
@@ -95,6 +129,18 @@ export class AuthManager {
    * @throws MCPError if not authenticated
    */
   getAuthType(): 'api-token' | 'jwt' {
+    const requestSession = getRequestAuthSession();
+    if (requestSession) {
+      return requestSession.authType;
+    }
+
+    if (hasRequestContext()) {
+      throw new MCPError(
+        ErrorCode.AUTH_REQUIRED,
+        'No Vikunja token is linked for this ContextForge user. Use link_vikunja_token first.',
+      );
+    }
+
     if (!this.session) {
       throw new MCPError(
         ErrorCode.AUTH_REQUIRED,

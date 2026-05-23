@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "start:http": "MCP_TRANSPORT=http node dist/index.js",
     "build": "node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc",
     "test": "jest --silent",
     "test:watch": "jest --watch --silent",

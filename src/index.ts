@@ -14,6 +14,9 @@ import { registerTools } from './tools';
 import { logger } from './utils/logger';
 import { createSecureConnectionMessage, createSecureLogConfig } from './utils/security';
 import { createVikunjaClientFactory, setGlobalClientFactory, type VikunjaClientFactory } from './client';
+import { LinkedTokenStore } from './storage/LinkedTokenStore';
+import { VikunjaUpdateHub } from './updates/VikunjaUpdateHub';
+import { startHttpServer } from './http/server';
 
 dotenv.config({ quiet: true });
 
@@ -72,6 +75,61 @@ if (process.env.VIKUNJA_URL && process.env.VIKUNJA_API_TOKEN) {
 
 async function main(): Promise<void> {
   await factoryInitializationPromise;
+
+  const transportMode = process.env.MCP_TRANSPORT ?? process.env.MCP_MODE ?? 'stdio';
+  if (transportMode === 'http' || transportMode === 'streamable-http') {
+    const tokenStore = new LinkedTokenStore(
+      process.env.TOKEN_STORE_PATH ?? '/data/vikunja-mcp.sqlite',
+      process.env.TOKEN_ENCRYPTION_KEY ?? '',
+    );
+    const updateHubOptions: {
+      pollingIntervalMs: number;
+      webhookTargetUrl?: string;
+      webhookSecret?: string;
+    } = {
+      pollingIntervalMs: Number(process.env.VIKUNJA_POLL_INTERVAL_MS ?? '30000'),
+    };
+    if (process.env.VIKUNJA_MCP_WEBHOOK_URL !== undefined) {
+      updateHubOptions.webhookTargetUrl = process.env.VIKUNJA_MCP_WEBHOOK_URL;
+    }
+    if (process.env.VIKUNJA_WEBHOOK_SECRET !== undefined) {
+      updateHubOptions.webhookSecret = process.env.VIKUNJA_WEBHOOK_SECRET;
+    }
+    const updateHub = new VikunjaUpdateHub(updateHubOptions);
+
+    const httpOptions: {
+      port: number;
+      host: string;
+      authManager: AuthManager;
+      clientFactory?: VikunjaClientFactory;
+      tokenStore: LinkedTokenStore;
+      updateHub: VikunjaUpdateHub;
+      identityClaimsSecret?: string;
+      requireIdentity: boolean;
+      requireIdentitySignature: boolean;
+      webhookSecret?: string;
+    } = {
+      port: Number(process.env.PORT ?? process.env.MCP_HTTP_PORT ?? '3333'),
+      host: process.env.HOST ?? '0.0.0.0',
+      authManager,
+      tokenStore,
+      updateHub,
+      requireIdentity: process.env.CONTEXTFORGE_IDENTITY_REQUIRED !== 'false',
+      requireIdentitySignature: process.env.CONTEXTFORGE_IDENTITY_SIGNATURE_REQUIRED !== 'false',
+    };
+    if (clientFactory !== null) {
+      httpOptions.clientFactory = clientFactory;
+    }
+    if (process.env.IDENTITY_CLAIMS_SECRET !== undefined) {
+      httpOptions.identityClaimsSecret = process.env.IDENTITY_CLAIMS_SECRET;
+    }
+    if (process.env.VIKUNJA_WEBHOOK_SECRET !== undefined) {
+      httpOptions.webhookSecret = process.env.VIKUNJA_WEBHOOK_SECRET;
+    }
+
+    await startHttpServer(httpOptions);
+    return;
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
