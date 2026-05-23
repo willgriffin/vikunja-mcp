@@ -23,6 +23,7 @@ export interface HttpRuntimeOptions {
   tokenStore: LinkedTokenStore;
   updateHub: VikunjaUpdateHub;
   identityClaimsSecret?: string;
+  contextForgeJwtSecret?: string;
   requireIdentity: boolean;
   requireIdentitySignature: boolean;
   webhookSecret?: string;
@@ -236,6 +237,7 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
 
       const identityOptions: {
         claimsSecret?: string;
+        contextForgeJwtSecret?: string;
         requireIdentity: boolean;
         requireSignature: boolean;
       } = {
@@ -244,6 +246,9 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
       };
       if (options.identityClaimsSecret !== undefined) {
         identityOptions.claimsSecret = options.identityClaimsSecret;
+      }
+      if (options.contextForgeJwtSecret !== undefined) {
+        identityOptions.contextForgeJwtSecret = options.contextForgeJwtSecret;
       }
 
       const identity = extractContextForgeIdentity(req.headers, identityOptions);
