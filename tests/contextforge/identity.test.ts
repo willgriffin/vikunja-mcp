@@ -1,5 +1,9 @@
 import { createHmac } from 'node:crypto';
-import { extractContextForgeIdentity, verifyContextForgeSignature } from '../../src/contextforge/identity';
+import {
+  extractContextForgeIdentity,
+  extractContextForgeIdentityFromMeta,
+  verifyContextForgeSignature,
+} from '../../src/contextforge/identity';
 
 function signature(userId: string, email: string, secret: string): string {
   return createHmac('sha256', secret).update(`${userId}:${email}`).digest('hex');
@@ -111,5 +115,31 @@ describe('ContextForge identity verification', () => {
       requireIdentity: true,
       requireSignature: true,
     })).toThrow('bearer token signature is invalid');
+  });
+
+  it('extracts identity from ContextForge MCP request metadata', () => {
+    const identity = extractContextForgeIdentityFromMeta({
+      user: {
+        id: 'cricket@happyvertical.com',
+        email: 'cricket@happyvertical.com',
+        full_name: 'Cricket',
+        groups: ['platform'],
+        teams: ['team-a'],
+        roles: ['maintainer'],
+        is_admin: false,
+        auth_method: 'bearer',
+      },
+    });
+
+    expect(identity).toEqual({
+      id: 'cricket@happyvertical.com',
+      email: 'cricket@happyvertical.com',
+      fullName: 'Cricket',
+      groups: ['platform'],
+      teams: ['team-a'],
+      roles: ['maintainer'],
+      isAdmin: false,
+      authMethod: 'bearer',
+    });
   });
 });

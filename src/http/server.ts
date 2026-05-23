@@ -6,7 +6,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { AuthManager } from '../auth/AuthManager';
 import type { VikunjaClientFactory } from '../client/VikunjaClientFactory';
 import { runWithRequestContext, type ContextForgeIdentity } from '../context/request-context';
-import { extractContextForgeIdentity } from '../contextforge/identity';
+import { extractContextForgeIdentity, extractContextForgeIdentityFromMeta } from '../contextforge/identity';
 import type { LinkedTokenStore } from '../storage/LinkedTokenStore';
 import { registerTools } from '../tools';
 import { registerContextForgeTools } from '../tools/contextforge';
@@ -90,6 +90,36 @@ function isIdentityOptionalMessage(body: unknown): boolean {
     }
     return IDENTITY_OPTIONAL_METHODS.has(message.method);
   });
+}
+
+function getJsonRpcMeta(message: unknown): unknown {
+  if (!isJsonRpcObject(message)) {
+    return undefined;
+  }
+  const params = (message as { params?: unknown }).params;
+  if (typeof params !== 'object' || params === null) {
+    return undefined;
+  }
+  return (params as { _meta?: unknown })._meta;
+}
+
+function identityFromJsonRpcMeta(body: unknown): ContextForgeIdentity | undefined {
+  const messages = Array.isArray(body) ? body : [body];
+  let identity: ContextForgeIdentity | undefined;
+
+  for (const message of messages) {
+    const messageIdentity = extractContextForgeIdentityFromMeta(getJsonRpcMeta(message));
+    if (!messageIdentity) {
+      continue;
+    }
+
+    if (identity && identity.id !== messageIdentity.id) {
+      throw new MCPError(ErrorCode.AUTH_FAILED, 'ContextForge _meta.user cannot change within one MCP request');
+    }
+    identity = messageIdentity;
+  }
+
+  return identity;
 }
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -237,13 +267,17 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
         requestAllowsMissingIdentity = transports.get(sessionId)?.allowsAnonymousDiscovery === true;
       }
 
+      const metaIdentity = identityFromJsonRpcMeta(body);
       const identityOptions: {
         claimsSecret?: string;
         contextForgeJwtSecret?: string;
         requireIdentity: boolean;
         requireSignature: boolean;
       } = {
-        requireIdentity: options.requireIdentity && !requestAllowsMissingIdentity && existingSessionTransport?.identity === undefined,
+        requireIdentity: options.requireIdentity
+          && !requestAllowsMissingIdentity
+          && existingSessionTransport?.identity === undefined
+          && metaIdentity === undefined,
         requireSignature: options.requireIdentitySignature,
       };
       if (options.identityClaimsSecret !== undefined) {
@@ -253,7 +287,7 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
         identityOptions.contextForgeJwtSecret = options.contextForgeJwtSecret;
       }
 
-      let identity = extractContextForgeIdentity(req.headers, identityOptions);
+      let identity = extractContextForgeIdentity(req.headers, identityOptions) ?? metaIdentity;
       if (
         identity !== undefined
         && existingSessionTransport?.identity !== undefined

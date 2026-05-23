@@ -27,6 +27,20 @@ interface ContextForgeJwtClaims {
   };
 }
 
+interface ContextForgeMetaUser {
+  id?: unknown;
+  email?: unknown;
+  full_name?: unknown;
+  fullName?: unknown;
+  groups?: unknown;
+  teams?: unknown;
+  roles?: unknown;
+  is_admin?: unknown;
+  isAdmin?: unknown;
+  auth_method?: unknown;
+  authMethod?: unknown;
+}
+
 function firstHeader(headers: IncomingHttpHeaders | Record<string, string | string[] | undefined>, name: string): string | undefined {
   const direct = headers[name] ?? headers[name.toLowerCase()];
   const value = Array.isArray(direct) ? direct[0] : direct;
@@ -104,6 +118,10 @@ function stringArrayClaim(value: unknown): string[] {
   return value
     .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     .map((item) => item.trim());
+}
+
+function booleanClaim(value: unknown): boolean {
+  return value === true;
 }
 
 function verifyJwtSignature(headerPart: string, payloadPart: string, signaturePart: string, secret: string): boolean {
@@ -245,6 +263,44 @@ export function extractContextForgeIdentity(
     if (!verifyContextForgeSignature(identity, signature, options.claimsSecret)) {
       throw new MCPError(ErrorCode.AUTH_REQUIRED, 'ContextForge identity signature is missing or invalid');
     }
+  }
+
+  return identity;
+}
+
+export function extractContextForgeIdentityFromMeta(meta: unknown): ContextForgeIdentity | undefined {
+  if (typeof meta !== 'object' || meta === null) {
+    return undefined;
+  }
+
+  const user = (meta as { user?: unknown }).user;
+  if (typeof user !== 'object' || user === null) {
+    return undefined;
+  }
+
+  const metaUser = user as ContextForgeMetaUser;
+  const id = stringClaim(metaUser.id) ?? stringClaim(metaUser.email);
+  if (!id) {
+    throw new MCPError(ErrorCode.AUTH_FAILED, 'ContextForge _meta.user does not contain a user id');
+  }
+
+  const identity: ContextForgeIdentity = {
+    id,
+    groups: stringArrayClaim(metaUser.groups),
+    teams: stringArrayClaim(metaUser.teams),
+    roles: stringArrayClaim(metaUser.roles),
+    isAdmin: booleanClaim(metaUser.is_admin) || booleanClaim(metaUser.isAdmin),
+    authMethod: stringClaim(metaUser.auth_method) ?? stringClaim(metaUser.authMethod) ?? 'contextforge-meta',
+  };
+
+  const email = stringClaim(metaUser.email) ?? (id.includes('@') ? id : undefined);
+  if (email) {
+    identity.email = email;
+  }
+
+  const fullName = stringClaim(metaUser.full_name) ?? stringClaim(metaUser.fullName);
+  if (fullName) {
+    identity.fullName = fullName;
   }
 
   return identity;
