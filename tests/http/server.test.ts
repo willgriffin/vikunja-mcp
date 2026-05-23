@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { request as httpRequest, type Server } from 'node:http';
+import { request as httpRequest, type IncomingHttpHeaders, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { AuthManager } from '../../src/auth/AuthManager';
 import type { LinkedTokenStore } from '../../src/storage/LinkedTokenStore';
@@ -8,6 +8,7 @@ import type { VikunjaUpdateHub } from '../../src/updates/VikunjaUpdateHub';
 
 interface TestResponse {
   statusCode: number;
+  headers: IncomingHttpHeaders;
   body: string;
 }
 
@@ -32,7 +33,7 @@ function request(server: Server, method: string, path: string, body = '', header
         responseBody += chunk;
       });
       res.on('end', () => {
-        resolve({ statusCode: res.statusCode ?? 0, body: responseBody });
+        resolve({ statusCode: res.statusCode ?? 0, headers: res.headers, body: responseBody });
       });
     });
 
@@ -54,6 +55,11 @@ function closeServer(server: Server): Promise<void> {
       resolve();
     });
   });
+}
+
+function parseMcpBody(body: string): unknown {
+  const dataLine = body.split('\n').find((line) => line.startsWith('data: '));
+  return JSON.parse(dataLine ? dataLine.slice('data: '.length) : body);
 }
 
 function createOptions(overrides: Partial<HttpRuntimeOptions> = {}): HttpRuntimeOptions {
@@ -111,6 +117,112 @@ describe('HTTP MCP server hardening', () => {
 
     expect(response.statusCode).toBe(413);
     expect(JSON.parse(response.body).error.message).toContain('Request body exceeds maximum size');
+  });
+
+  it('allows anonymous MCP discovery when ContextForge identity is required', async () => {
+    server = await startHttpServer(createOptions({
+      requireIdentity: true,
+      requireIdentitySignature: true,
+      identityClaimsSecret: 'identity-secret',
+    }));
+
+    const initializeResponse = await request(
+      server,
+      'POST',
+      '/mcp',
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'contextforge-probe', version: '0.0.0' },
+        },
+      }),
+      {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+      },
+    );
+    const sessionId = initializeResponse.headers['mcp-session-id'];
+
+    expect(initializeResponse.statusCode).toBe(200);
+    expect(typeof sessionId).toBe('string');
+
+    const toolsResponse = await request(
+      server,
+      'POST',
+      '/mcp',
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/list',
+        params: {},
+      }),
+      {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        'mcp-session-id': String(sessionId),
+      },
+    );
+
+    expect(toolsResponse.statusCode).toBe(200);
+    expect(parseMcpBody(toolsResponse.body)).toMatchObject({
+      jsonrpc: '2.0',
+      id: 2,
+    });
+  });
+
+  it('still requires ContextForge identity for tool calls after anonymous discovery', async () => {
+    server = await startHttpServer(createOptions({
+      requireIdentity: true,
+      requireIdentitySignature: true,
+      identityClaimsSecret: 'identity-secret',
+    }));
+
+    const initializeResponse = await request(
+      server,
+      'POST',
+      '/mcp',
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'contextforge-probe', version: '0.0.0' },
+        },
+      }),
+      {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+      },
+    );
+
+    const response = await request(
+      server,
+      'POST',
+      '/mcp',
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'vikunja_auth_status',
+          arguments: {},
+        },
+      }),
+      {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        'mcp-session-id': String(initializeResponse.headers['mcp-session-id']),
+      },
+    );
+
+    expect(response.statusCode).toBe(401);
+    expect(JSON.parse(response.body).error.message).toBe('ContextForge identity header is required');
   });
 
   it('does not expose the webhook endpoint without a configured secret', async () => {

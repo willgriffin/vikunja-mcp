@@ -32,6 +32,7 @@ export interface HttpRuntimeOptions {
 interface SessionTransport {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
+  allowsAnonymousDiscovery: boolean;
 }
 
 function createMcpServer(
@@ -64,6 +65,29 @@ function isInitializeMessage(body: unknown): boolean {
     return body.some(isInitializeRequest);
   }
   return isInitializeRequest(body);
+}
+
+const IDENTITY_OPTIONAL_METHODS = new Set([
+  'initialize',
+  'notifications/initialized',
+  'tools/list',
+  'resources/list',
+  'resources/templates/list',
+  'prompts/list',
+]);
+
+function isJsonRpcObject(value: unknown): value is { method?: unknown } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isIdentityOptionalMessage(body: unknown): boolean {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.length > 0 && messages.every((message) => {
+    if (!isJsonRpcObject(message) || typeof message.method !== 'string') {
+      return false;
+    }
+    return IDENTITY_OPTIONAL_METHODS.has(message.method);
+  });
 }
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -191,12 +215,31 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
     }
 
     try {
+      const sessionId = getHeader(req, 'mcp-session-id');
+      let body: unknown;
+      let requestAllowsMissingIdentity = false;
+
+      if (req.method === 'POST') {
+        const rawBody = await readRawBody(req, maxBodyBytes);
+        if (rawBody.length > 0) {
+          try {
+            body = JSON.parse(rawBody) as unknown;
+          } catch {
+            writeJson(res, 400, jsonRpcError('Parse error', -32700));
+            return;
+          }
+        }
+        requestAllowsMissingIdentity = isIdentityOptionalMessage(body);
+      } else if ((req.method === 'GET' || req.method === 'DELETE') && sessionId) {
+        requestAllowsMissingIdentity = transports.get(sessionId)?.allowsAnonymousDiscovery === true;
+      }
+
       const identityOptions: {
         claimsSecret?: string;
         requireIdentity: boolean;
         requireSignature: boolean;
       } = {
-        requireIdentity: options.requireIdentity,
+        requireIdentity: options.requireIdentity && !requestAllowsMissingIdentity,
         requireSignature: options.requireIdentitySignature,
       };
       if (options.identityClaimsSecret !== undefined) {
@@ -205,7 +248,6 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
 
       const identity = extractContextForgeIdentity(req.headers, identityOptions);
       const authSession = identity ? options.tokenStore.getSession(identity.id) : undefined;
-      const sessionId = getHeader(req, 'mcp-session-id');
       const requestContext: {
         identity?: NonNullable<typeof identity>;
         authSession?: NonNullable<typeof authSession>;
@@ -219,17 +261,6 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
 
       await runWithRequestContext(requestContext, async () => {
         if (req.method === 'POST') {
-          const rawBody = await readRawBody(req, maxBodyBytes);
-          let body: unknown;
-          if (rawBody.length > 0) {
-            try {
-              body = JSON.parse(rawBody) as unknown;
-            } catch {
-              writeJson(res, 400, jsonRpcError('Parse error', -32700));
-              return;
-            }
-          }
-
           let sessionTransport: SessionTransport | undefined;
           if (sessionId) {
             sessionTransport = transports.get(sessionId);
@@ -244,10 +275,15 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
               options.tokenStore,
               options.updateHub,
             );
+            const allowsAnonymousDiscovery = identity === undefined;
             const transport = new StreamableHTTPServerTransport({
               sessionIdGenerator: (): string => randomUUID(),
               onsessioninitialized: (newSessionId: string): void => {
-                transports.set(newSessionId, { transport, server });
+                transports.set(newSessionId, {
+                  transport,
+                  server,
+                  allowsAnonymousDiscovery,
+                });
               },
               onsessionclosed: (closedSessionId: string): void => {
                 options.updateHub.unsubscribe(closedSessionId);
@@ -261,7 +297,7 @@ export async function startHttpServer(options: HttpRuntimeOptions): Promise<Serv
               }
             };
             await server.connect(transport);
-            sessionTransport = { transport, server };
+            sessionTransport = { transport, server, allowsAnonymousDiscovery };
           } else {
             writeJson(res, 400, jsonRpcError('Missing MCP session id for non-initialize request', -32000));
             return;
