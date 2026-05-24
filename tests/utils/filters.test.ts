@@ -251,14 +251,35 @@ describe('Consolidated Filter Utilities', () => {
       const maliciousInput = 'title = test; DROP TABLE users;';
       const result = parseFilterString(maliciousInput);
       expect(result.expression).toBeNull();
-      expect(result.error?.message).toBe('Invalid filter syntax');
+      expect(result.error?.message).toMatch(/Invalid filter syntax|invalid characters/);
     });
 
     it('should handle simple valid input', () => {
       const result = parseFilterString('done = true');
       // Note: Simplified implementation always returns a basic structure for valid input
       expect(result.expression).not.toBeNull();
-      expect(result.error).toBeNull();
+      expect(result.error).toBeUndefined();
+    });
+
+    it('should parse word logical operators', () => {
+      const andResult = parseFilterString('done = true AND priority > 3');
+      expect(andResult.error).toBeUndefined();
+      expect(andResult.expression?.groups[0].operator).toBe('AND');
+      expect(andResult.expression?.groups[0].conditions).toHaveLength(2);
+
+      const orResult = parseFilterString('done = true OR priority > 3');
+      expect(orResult.error).toBeUndefined();
+      expect(orResult.expression?.groups[0].operator).toBe('OR');
+      expect(orResult.expression?.groups[0].conditions).toHaveLength(2);
+    });
+
+    it('should round-trip word logical operators emitted by stringifiers', () => {
+      const source = 'done = true AND priority > 3';
+      const parsed = parseFilterString(source);
+
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.expression).not.toBeNull();
+      expect(expressionToString(parsed.expression!)).toBe(source);
     });
   });
 
@@ -367,6 +388,38 @@ describe('Consolidated Filter Utilities', () => {
       expect(result[0].id).toBe(2);
     });
 
+    it('should use numeric ordering for less-than comparisons when both values are numeric', () => {
+      const tasks = [
+        { id: 1, priority: '2' },
+        { id: 2, priority: '10' },
+      ];
+
+      const filter: SimpleFilter = {
+        field: 'priority',
+        operator: '<',
+        value: 10
+      };
+
+      const result = applyClientSideFilter(tasks, filter);
+      expect(result.map(task => task.id)).toEqual([1]);
+    });
+
+    it('should fall back to lexicographic ordering for non-numeric values', () => {
+      const tasks = [
+        { id: 1, due_date: '2024-01-15' },
+        { id: 2, due_date: '2024-02-15' },
+      ];
+
+      const filter: SimpleFilter = {
+        field: 'due_date',
+        operator: '<',
+        value: '2024-02-01'
+      };
+
+      const result = applyClientSideFilter(tasks, filter);
+      expect(result.map(task => task.id)).toEqual([1]);
+    });
+
     it('should filter by string like operator', () => {
       const filter: SimpleFilter = {
         field: 'title',
@@ -436,7 +489,7 @@ describe('Consolidated Filter Utilities', () => {
         .where('done', '=', false)
         .toString();
 
-      expect(result).toBe('done = true OR priority = 3 AND done = false');
+      expect(result).toBe('done = true OR priority = 3 OR done = false');
     });
 
     it('should build filter expression', () => {

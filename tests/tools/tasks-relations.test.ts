@@ -245,7 +245,7 @@ describe('Task Relations Tool', () => {
           otherTaskId: 2,
           relationKind: 'subtask',
         }),
-      ).rejects.toThrow('Failed to create task relation');
+      ).rejects.toThrow('create task relation failed');
     });
 
     it('should handle non-Error thrown values', async () => {
@@ -258,7 +258,7 @@ describe('Task Relations Tool', () => {
           otherTaskId: 2,
           relationKind: 'subtask',
         }),
-      ).rejects.toThrow('Failed to create task relation: String error thrown');
+      ).rejects.toThrow('create task relation failed: Unknown error');
     });
   });
 
@@ -327,7 +327,7 @@ describe('Task Relations Tool', () => {
           otherTaskId: 2,
           relationKind: 'subtask',
         }),
-      ).rejects.toThrow('Failed to remove task relation');
+      ).rejects.toThrow('remove task relation failed');
     });
 
     it('should handle non-Error thrown values', async () => {
@@ -340,7 +340,7 @@ describe('Task Relations Tool', () => {
           otherTaskId: 2,
           relationKind: 'subtask',
         }),
-      ).rejects.toThrow('Failed to remove task relation: [object Object]');
+      ).rejects.toThrow('remove task relation failed: Unknown error');
     });
   });
 
@@ -415,7 +415,7 @@ describe('Task Relations Tool', () => {
           subcommand: 'relations',
           id: 1,
         }),
-      ).rejects.toThrow('Failed to get task relations');
+      ).rejects.toThrow('get task relations failed');
     });
 
     it('should handle non-Error thrown values', async () => {
@@ -426,7 +426,7 @@ describe('Task Relations Tool', () => {
           subcommand: 'relations',
           id: 1,
         }),
-      ).rejects.toThrow('Failed to get task relations: 12345');
+      ).rejects.toThrow('get task relations failed: Unknown error');
     });
   });
 

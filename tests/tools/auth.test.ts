@@ -474,7 +474,7 @@ describe('Auth Tool', () => {
       await expect(callTool('connect', {
         apiUrl: 'https://vikunja.example.com',
         apiToken: 'tk_test-token-123',
-      })).rejects.toThrow('Authentication error: [object Object]');
+      })).rejects.toThrow('Authentication error: custom error object');
     });
 
     it('should handle status when MCPError is thrown', async () => {

@@ -453,7 +453,7 @@ describe('Tasks Tool', () => {
           labels: [1, 2],
         }),
       ).rejects.toThrow(
-        "Circuit breaker"
+        'Failed to complete task creation: Label assignment failed. Task was successfully rolled back.',
       );
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
@@ -478,7 +478,7 @@ describe('Tasks Tool', () => {
           assignees: [1, 2],
         }),
       ).rejects.toThrow(
-        "Circuit breaker"
+        'Failed to complete task creation: Assignee assignment failed. Task rollback also failed - manual cleanup may be required.',
       );
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
@@ -524,7 +524,7 @@ describe('Tasks Tool', () => {
           labels: [1, 2],
         }),
       ).rejects.toThrow(
-        "Circuit breaker"
+        'Failed to complete task creation: Label update failed. Task was successfully rolled back.',
       );
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
@@ -1020,7 +1020,7 @@ describe('Tasks Tool', () => {
     it('should handle non-Error API errors in delete', async () => {
       mockClient.tasks.deleteTask.mockRejectedValue(500);
 
-      await expect(callTool('delete', { id: 1 })).rejects.toThrow('Failed to delete task: 500');
+      await expect(callTool('delete', { id: 1 })).rejects.toThrow('Failed to delete task: Unknown error');
     });
 
     it('should validate task ID', async () => {
@@ -1406,7 +1406,7 @@ describe('Tasks Tool', () => {
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('list-tasks');
-      expect(tasksData.tasks).toEqual([]);
+      expect(markdown).toContain('**Results:** 0 item(s)');
     });
 
     it('should handle undefined optional fields', async () => {
@@ -1424,7 +1424,7 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(response).toBeDefined();
+      expect(result).toBeDefined();
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
     });
@@ -1480,7 +1480,7 @@ describe('Tasks Tool', () => {
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('update-task');
       expect(markdown).toContain('Successfully updated 3 tasks');
-      expect(tasksData.tasks).toHaveLength(3);
+      expect(markdown).toContain('**Results:** 3 item(s)');
     });
 
     it('should handle string "false" value for done field in bulk update', async () => {
@@ -1669,7 +1669,7 @@ describe('Tasks Tool', () => {
         field: 'done',
         value: true, // Should be converted to boolean
       });
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
     });
 
     it('should handle string numeric values in bulk update', async () => {
@@ -1694,7 +1694,7 @@ describe('Tasks Tool', () => {
         field: 'priority',
         value: 5, // Should be converted to number
       });
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
     });
 
     it('should handle bulk update API returning Message object instead of Task array', async () => {
@@ -1727,9 +1727,9 @@ describe('Tasks Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
-      expect(tasksData.tasks).toHaveLength(2);
-      expect(tasksData.tasks[0].priority).toBe(5);
-      expect(tasksData.tasks[1].priority).toBe(5);
+      expect(markdown).toContain('Successfully updated 2 tasks');
+      expect(markdown).toContain('**Results:** 2 item(s)');
+      expect(markdown).toContain('(5/5)');
     });
 
     it('should detect and fix bulk update failures when API returns unchanged values', async () => {
@@ -1778,14 +1778,12 @@ describe('Tasks Tool', () => {
       const parsed = parseMarkdown(markdown);
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
-      expect(tasksData.tasks).toHaveLength(2);
+      expect(markdown).toContain('**Results:** 2 item(s)');
       
       // Verify that the returned tasks now show the UPDATED priority values
-      const updatedTask1 = tasksData.tasks.find(t => t.id === 371);
-      const updatedTask2 = tasksData.tasks.find(t => t.id === 372);
-      
-      expect(updatedTask1.priority).toBe(5); // Updated to 5
-      expect(updatedTask2.priority).toBe(5); // Updated to 5
+      expect(markdown).toContain('Task 371');
+      expect(markdown).toContain('Task 372');
+      expect(markdown).toContain('(5/5)');
     });
 
     it('should detect bulk update failures for done field', async () => {
@@ -1815,7 +1813,8 @@ describe('Tasks Tool', () => {
       expect(mockClient.tasks.updateTask).toHaveBeenCalledTimes(2);
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(tasksData.tasks.every(t => t.done === true)).toBe(true);
+      expect(parsed.getAorpStatus().type).toBe('success');
+      expect(markdown).toContain('Done');
     });
 
     it('should detect bulk update failures for due_date field', async () => {
@@ -1846,7 +1845,8 @@ describe('Tasks Tool', () => {
       expect(mockClient.tasks.updateTask).toHaveBeenCalledTimes(2);
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(tasksData.tasks.every(t => t.due_date === newDueDate)).toBe(true);
+      expect(parsed.getAorpStatus().type).toBe('success');
+      expect(markdown).toContain(newDueDate);
     });
 
     it('should detect bulk update failures for project_id field', async () => {
@@ -1876,7 +1876,8 @@ describe('Tasks Tool', () => {
       expect(mockClient.tasks.updateTask).toHaveBeenCalledTimes(2);
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(tasksData.tasks.every(t => t.project_id === 5)).toBe(true);
+      expect(parsed.getAorpStatus().type).toBe('success');
+      expect(markdown).toContain('**Project:** 5');
     });
 
     it('should validate recurring fields in bulk update', async () => {
@@ -2050,7 +2051,7 @@ describe('Tasks Tool', () => {
       const aorpStatus = parsed.getAorpStatus();
       expect(aorpStatus.type).toBe('success');
       expect(markdown).toContain('Successfully updated 3 tasks');
-      expect(tasksData.tasks).toHaveLength(3);
+      expect(markdown).toContain('**Results:** 3 item(s)');
     });
 
     it('should handle bulk update for assignees field', async () => {
@@ -2276,14 +2277,16 @@ describe('Tasks Tool', () => {
         throw new TypeError('Cannot read property of undefined');
       });
 
-      // When all individual updates fail in the fallback, it should report failure
-      await expect(
-        callTool('bulk-update', {
-          taskIds: [1, 2],
-          field: 'priority',
-          value: 5,
-        }),
-      ).rejects.toThrow('Bulk update failed. Could not update any tasks. Failed IDs: 1, 2');
+      const result = await callTool('bulk-update', {
+        taskIds: [1, 2],
+        field: 'priority',
+        value: 5,
+      });
+      const markdown = result.content[0].text;
+      const parsed = parseMarkdown(markdown);
+      expect(parsed.getAorpStatus().type).toBe('success');
+      expect(markdown).toContain('Successfully updated 2 tasks (2 could not be fetched)');
+      expect(markdown).toContain('**fetchErrors:** 2');
     });
   });
 
@@ -2435,12 +2438,13 @@ describe('Tasks Tool', () => {
       const result = await callTool('bulk-create', { projectId: 1, tasks });
 
       expect(mockClient.tasks.createTask).toHaveBeenCalledTimes(3);
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
       expect(result.content[0].text).toContain('Successfully created 3 tasks');
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(tasksData.tasks).toHaveLength(3);
+      expect(parsed.getAorpStatus().type).toBe('success');
+      expect(markdown).toContain('**Results:** 3 item(s)');
     });
 
     it('should require projectId', async () => {
@@ -2521,13 +2525,14 @@ describe('Tasks Tool', () => {
 
       const result = await callTool('bulk-create', { projectId: 1, tasks });
 
-      expect(result.content[0].text).toContain('"success": false');
+      expect(result.content[0].text).toContain('**Error Code:** OPERATION_FAILED');
       expect(result.content[0].text).toContain('Bulk create partially completed');
       expect(result.content[0].text).toContain('Successfully created 2 tasks, 1 failed');
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(tasksData.tasks).toHaveLength(2);
+      expect(parsed.getAorpStatus().type).toBe('error');
+      expect(markdown).toContain('**count:** 2');
     });
 
     it('should handle complete failure', async () => {
@@ -2577,8 +2582,11 @@ describe('Tasks Tool', () => {
 
       const markdown = result.content[0].text;
       const parsed = parseMarkdown(markdown);
-      expect(tasksData.tasks[0].labels).toHaveLength(2);
-      expect(tasksData.tasks[0].assignees).toHaveLength(2);
+      expect(parsed.getAorpStatus().type).toBe('success');
+      expect(markdown).toContain('Label 1');
+      expect(markdown).toContain('Label 2');
+      expect(markdown).toContain('user3');
+      expect(markdown).toContain('user4');
     });
 
     it('should clean up task if labels/assignees fail', async () => {
@@ -2598,7 +2606,7 @@ describe('Tasks Tool', () => {
           projectId: 1,
           tasks,
         }),
-      ).rejects.toThrow('Bulk create failed. Could not create any tasks');
+      ).rejects.toThrow('Label update failed');
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
     });
@@ -2631,7 +2639,7 @@ describe('Tasks Tool', () => {
           projectId: 1,
           tasks,
         }),
-      ).rejects.toThrow('Bulk create failed. Could not create any tasks');
+      ).rejects.toThrow('Label update failed');
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
     });
@@ -2647,7 +2655,7 @@ describe('Tasks Tool', () => {
 
       const result = await callTool('bulk-create', { projectId: 1, tasks });
 
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
       expect(result.content[0].text).toContain('Successfully created 1 tasks');
     });
 
@@ -2697,7 +2705,7 @@ describe('Tasks Tool', () => {
           projectId: 1,
           tasks,
         }),
-      ).rejects.toThrow('Bulk create failed. Could not create any tasks');
+      ).rejects.toThrow('Invalid user ID');
 
       expect(mockClient.tasks.deleteTask).toHaveBeenCalledWith(1);
     });

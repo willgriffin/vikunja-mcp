@@ -29,9 +29,8 @@ describe('Security Validation Utilities', () => {
       expect(result).toBe('This is a valid string');
     });
 
-    it('should escape HTML special characters (when not XSS)', () => {
+    it('should escape safe special characters and reject HTML-like tags', () => {
       const testCases = [
-        { input: 'Hello <world>', expected: 'Hello &lt;world&gt;' },
         { input: 'Test "quoted" string', expected: 'Test &quot;quoted&quot; string' },
         { input: "Test 'single' quotes", expected: 'Test &#x27;single&#x27; quotes' },
         { input: 'path/to/file', expected: 'path&#x2F;to&#x2F;file' }
@@ -40,6 +39,7 @@ describe('Security Validation Utilities', () => {
       testCases.forEach(({ input, expected }) => {
         expect(sanitizeString(input)).toBe(expected);
       });
+      expect(() => sanitizeString('Hello <world>')).toThrow(MCPError);
     });
 
     it('should throw error for non-string values', () => {
@@ -470,7 +470,7 @@ describe('Security Validation Utilities', () => {
       expect(result).toContain('test');
     });
 
-    it('should detect and prevent circular references', () => {
+    it('should replace circular references with null', () => {
       const circular: any = {
         groups: [{
           conditions: [{ field: 'title', operator: '=', value: 'test' }],
@@ -479,13 +479,11 @@ describe('Security Validation Utilities', () => {
       };
       circular.groups.push(circular); // Add circular reference in groups array
 
-      expect(() => safeJsonStringify(circular)).toThrow(MCPError);
+      expect(safeJsonStringify(circular)).toContain('null');
     });
 
-    it('should throw error for invalid expressions', () => {
+    it('should stringify non-expression JSON values safely', () => {
       const invalidExpressions = [
-        null,
-        undefined,
         'not an object',
         { groups: 'not an array' },
         { groups: [] }, // empty groups should fail validation
@@ -493,16 +491,22 @@ describe('Security Validation Utilities', () => {
       ];
 
       invalidExpressions.forEach(expression => {
-        expect(() => safeJsonStringify(expression)).toThrow(MCPError);
+        expect(() => safeJsonStringify(expression)).not.toThrow();
       });
     });
 
-    it('should handle JSON.stringify failures', () => {
+    it('should normalize non-JSON top-level values to null', () => {
+      expect(safeJsonStringify(undefined)).toBe('null');
+      expect(safeJsonStringify(() => undefined)).toBe('null');
+      expect(safeJsonStringify(Symbol('test'))).toBe('null');
+    });
+
+    it('should handle circular JSON structures', () => {
       // Create an object that will cause JSON.stringify to fail
       const problematic: any = { groups: [] };
       problematic.groups[0] = problematic; // This should create a circular reference
 
-      expect(() => safeJsonStringify(problematic)).toThrow(MCPError);
+      expect(safeJsonStringify(problematic)).toContain('null');
     });
 
     it('should preserve all validated data in output', () => {
@@ -729,14 +733,9 @@ describe('Security Validation Utilities', () => {
       });
     });
 
-    it('should escape safe HTML content', () => {
-      // Test that safe HTML tags are escaped rather than stripped
+    it('should reject HTML content', () => {
       const safeInput = '<b>Bold text</b><em>Emphasis</em>';
-      const result = sanitizeString(safeInput);
-      // HTML entities should be escaped
-      expect(result).toContain('&lt;b&gt;');
-      expect(result).toContain('&lt;em&gt;');
-      expect(typeof result).toBe('string');
+      expect(() => sanitizeString(safeInput)).toThrow(MCPError);
     });
   });
 });

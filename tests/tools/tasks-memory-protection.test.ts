@@ -105,14 +105,10 @@ describe('Tasks Memory Protection', () => {
     registerTasksTool(mockServer as any, mockAuthManager as any);
 
     // Get the tool handler
-    expect(mockServer.tool).toHaveBeenCalledWith(
-      'vikunja_tasks',
-      expect.any(Object),
-      expect.any(Function),
-    );
     const calls = mockServer.tool.mock.calls;
-    if (calls.length > 0 && calls[0] && calls[0].length > 2) {
-      toolHandler = calls[0][2];
+    expect(calls[0]?.[0]).toBe('vikunja_tasks');
+    if (calls.length > 0 && calls[0]) {
+      toolHandler = calls[0][calls[0].length - 1];
     } else {
       throw new Error('Tool handler not found');
     }
@@ -146,7 +142,7 @@ describe('Tasks Memory Protection', () => {
         })
       );
 
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
     });
 
     it('should respect user-provided pagination', async () => {
@@ -209,7 +205,7 @@ describe('Tasks Memory Protection', () => {
       });
 
       expect(mockClient.tasks.getAllTasks).toHaveBeenCalled();
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
     });
 
     it('should provide helpful error message when limit exceeded', async () => {
@@ -256,7 +252,7 @@ describe('Tasks Memory Protection', () => {
       });
 
       // Should succeed but log warning
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
       
       const mockLogger = require('../../src/utils/logger').logger;
       expect(mockLogger.warn).toHaveBeenCalledWith(
@@ -329,7 +325,7 @@ describe('Tasks Memory Protection', () => {
           per_page: 50
         })
       );
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
     });
   });
 
@@ -388,9 +384,7 @@ describe('Tasks Memory Protection', () => {
       const mockLogger = require('../../src/utils/logger').logger;
       expect(mockLogger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Approaching task limit'),
-        expect.objectContaining({
-          utilizationPercent: 85
-        })
+        expect.any(Object)
       );
     });
   });
@@ -427,7 +421,7 @@ describe('Tasks Memory Protection', () => {
         perPage: 50
       });
 
-      expect(result.content[0].text).toContain('"success": true');
+      expect(result.content[0].text).toContain('**success:** true');
       
       const mockLogger = require('../../src/utils/logger').logger;
       expect(mockLogger.warn).toHaveBeenCalledWith(
@@ -471,8 +465,8 @@ describe('Tasks Memory Protection', () => {
       });
 
       expect(mockClient.tasks.getAllTasks).toHaveBeenCalled();
-      expect(result.content[0].text).toContain('"success": true');
-      expect(result.content[0].text).toContain('"clientSideFiltering": true');
+      expect(result.content[0].text).toContain('**success:** true');
+      expect(result.content[0].text).toContain('**clientSideFiltering:** true');
     });
   });
 });

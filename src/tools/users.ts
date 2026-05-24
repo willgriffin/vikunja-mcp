@@ -80,7 +80,7 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
     'Manage user profiles, search users, and update user settings',
     {
       // Operation type
-      subcommand: z.enum(['current', 'search', 'settings', 'update-settings']),
+      subcommand: z.enum(['current', 'search', 'settings', 'update-settings']).default('current'),
 
       // Search parameters
       search: z.string().optional(),
@@ -118,7 +118,7 @@ export function registerUsersTool(server: McpServer, authManager: AuthManager, _
       const client = await getClientFromContext();
 
       try {
-        const subcommand = args.subcommand;
+        const subcommand = args.subcommand ?? 'current';
 
         switch (subcommand) {
           case 'current': {

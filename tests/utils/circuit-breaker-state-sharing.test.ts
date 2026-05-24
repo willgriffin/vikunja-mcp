@@ -186,8 +186,8 @@ describe('Circuit Breaker State Sharing', () => {
       expect(RETRY_CONFIG.BULK_OPERATIONS.circuitBreakerName).toBe(CIRCUIT_BREAKER_NAMES.BULK_OPERATIONS);
     });
 
-    it('should enable circuit breaker in retry configurations', () => {
-      expect(RETRY_CONFIG.AUTH_ERRORS.enableCircuitBreaker).toBe(true);
+    it('should enable circuit breakers only for shared infrastructure operations', () => {
+      expect(RETRY_CONFIG.AUTH_ERRORS.enableCircuitBreaker).toBe(false);
       expect(RETRY_CONFIG.NETWORK_ERRORS.enableCircuitBreaker).toBe(true);
       expect(RETRY_CONFIG.TASK_OPERATIONS.enableCircuitBreaker).toBe(true);
       expect(RETRY_CONFIG.BULK_OPERATIONS.enableCircuitBreaker).toBe(true);

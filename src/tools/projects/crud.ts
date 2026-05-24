@@ -579,7 +579,7 @@ export async function archiveProject(
     }
     throw handleStatusCodeError(
       error,
-      'Failed to archive project',
+      'archive project',
       id,
       `Project with ID ${id} not found`
     );
@@ -654,7 +654,7 @@ export async function unarchiveProject(
     }
     throw handleStatusCodeError(
       error,
-      'Failed to unarchive project',
+      'unarchive project',
       id,
       `Project with ID ${id} not found`
     );

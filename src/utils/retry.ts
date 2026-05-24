@@ -65,6 +65,8 @@ export interface RetryOptions {
   resetTimeout?: number;
   errorThresholdPercentage?: number;
   volumeThreshold?: number;
+  enableCircuitBreaker?: boolean;
+  circuitBreakerName?: string;
   shouldRetry?: (error: Error | ErrorWithCode) => boolean;
   initialDelay?: number;
   backoffFactor?: number;
@@ -78,10 +80,18 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'shouldRetry'>> = {
   resetTimeout: 30000,
   errorThresholdPercentage: 50,
   volumeThreshold: 5,
+  enableCircuitBreaker: false,
+  circuitBreakerName: 'anonymous',
   initialDelay: 1000,
   backoffFactor: 2,
   maxDelay: 30000
 };
+
+type RetryOperation<T> = () => Promise<T>;
+
+interface MutableOperationCircuitBreaker<T> extends CircuitBreaker {
+  setDefaultOperation?: (operation: RetryOperation<T>) => void;
+}
 
 /**
  * Simple circuit breaker factory using opossum directly
@@ -92,19 +102,31 @@ export function createCircuitBreaker<T>(
   options: RetryOptions = {}
 ): CircuitBreaker {
   // Check if a circuit breaker with this name already exists
-  const existingBreaker = circuitBreakerRegistry.get(name);
+  const existingBreaker = circuitBreakerRegistry.get(name) as MutableOperationCircuitBreaker<T> | undefined;
   if (existingBreaker) {
+    existingBreaker.setDefaultOperation?.(operation);
     return existingBreaker;
   }
 
   const opts = { ...DEFAULT_OPTIONS, ...options };
+  let defaultOperation = operation;
 
-  const breaker = new CircuitBreaker(operation, {
+  const breaker = new CircuitBreaker(
+    async (operationOverride?: RetryOperation<T>) => {
+      const operationToRun = operationOverride ?? defaultOperation;
+      return operationToRun();
+    },
+    {
     timeout: opts.timeout,
     resetTimeout: opts.resetTimeout,
     errorThresholdPercentage: opts.errorThresholdPercentage,
     volumeThreshold: opts.volumeThreshold
-  });
+    },
+  ) as MutableOperationCircuitBreaker<T>;
+
+  breaker.setDefaultOperation = (nextOperation: RetryOperation<T>): void => {
+    defaultOperation = nextOperation;
+  };
 
   // Register with the global registry
   circuitBreakerRegistry.register(name, breaker);
@@ -129,9 +151,12 @@ export async function withRetry<T>(
 
   for (let attempt = 0; attempt <= (opts.maxRetries || 3); attempt++) {
     try {
-      // Use circuit breaker for the operation
-      const breaker = createCircuitBreaker(operation, 'anonymous', opts);
-      return await breaker.fire() as Promise<T>;
+      if (opts.enableCircuitBreaker) {
+        const breaker = createCircuitBreaker(operation, opts.circuitBreakerName, opts);
+        return await breaker.fire(operation) as Promise<T>;
+      }
+
+      return await operation();
     } catch (error) {
       lastError = error;
 
@@ -146,7 +171,10 @@ export async function withRetry<T>(
       }
 
       // Log retry attempt
-      logger.debug(`Retry attempt ${attempt + 1}/${opts.maxRetries || 3} after ${delay}ms`);
+      logger.debug(`Retrying operation after ${delay}ms`, {
+        attempt: attempt + 1,
+        maxRetries: opts.maxRetries || 3,
+      });
 
       // Wait before retrying with exponential backoff
       await new Promise(resolve => setTimeout(resolve, delay));
@@ -166,7 +194,7 @@ export async function withNamedRetry<T>(
   options: RetryOptions = {}
 ): Promise<T> {
   const breaker = createCircuitBreaker(operation, name, options);
-  return breaker.fire() as Promise<T>;
+  return breaker.fire(operation) as Promise<T>;
 }
 
 /**
@@ -234,7 +262,7 @@ export const RETRY_CONFIG = {
     initialDelay: 1000,
     maxDelay: 10000,
     backoffFactor: 2,
-    enableCircuitBreaker: true,
+    enableCircuitBreaker: false,
     circuitBreakerName: 'vikunja-auth-connect'
   },
   NETWORK_ERRORS: {

@@ -23,7 +23,7 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
     'Manage task labels with full CRUD operations for organizing and categorizing tasks',
     {
       // Operation type
-      subcommand: z.enum(['list', 'get', 'create', 'update', 'delete']),
+      subcommand: z.enum(['list', 'get', 'create', 'update', 'delete']).default('list'),
 
       // Common parameters
       id: z.number().int().positive().optional(),
@@ -51,7 +51,7 @@ export function registerLabelsTool(server: McpServer, authManager: AuthManager, 
 
       const client = await getClientFromContext() as TypedVikunjaClient;
 
-      const subcommand = args.subcommand;
+      const subcommand = args.subcommand ?? 'list';
 
       try {
 

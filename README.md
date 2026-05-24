@@ -12,6 +12,11 @@ A Model Context Protocol (MCP) server that enables AI assistants to interact wit
 - **Team operations** for collaboration (get/update/members limited by API)
 - **User management** with settings and search
 - **Webhook management** for project automation
+- **Streamable HTTP and SSE transports** for gateway deployments alongside stdio
+- **ContextForge identity passthrough** with signed HappyVertical OIDC user claims
+- **Per-user Vikunja token linking** with encrypted SQLite storage
+- **Live project update subscriptions** via Vikunja webhooks plus polling fallback
+- **Container image support** for GHCR/Kubernetes deployments
 - **Batch import** tasks from CSV or JSON files
 - **Input validation** for dates, IDs, and hex colors
 - **Efficient diff-based updates** for assignees
@@ -50,9 +55,10 @@ All improvements maintain **100% backward compatibility** with existing implemen
 
 ## Requirements
 
-- Node.js 20+ (LTS versions only)
+- Node.js 24+
 - Vikunja instance with API access
 - API token (starting with `tk_`) or JWT token for authentication
+- For ContextForge HTTP mode: persistent SQLite storage and shared identity/webhook secrets
 
 ## Installation
 
@@ -78,7 +84,7 @@ The easiest way to use vikunja-mcp is through npx in your Claude Desktop or othe
 For development or customization:
 
 ```bash
-git clone https://github.com/democratize-technology/vikunja-mcp.git
+git clone https://github.com/willgriffin/vikunja-mcp.git
 cd vikunja-mcp
 npm install
 npm run build
@@ -103,23 +109,51 @@ Then configure your MCP client:
 
 This fork can also run as a Streamable HTTP MCP server behind ContextForge. In this mode, ContextForge forwards signed user identity headers and each user links their own Vikunja API token once. Vikunja API writes then use that user's token, preserving Vikunja actor attribution for kanban board updates and webhooks.
 
+Use the GHCR image in Kubernetes or Docker:
+
+```bash
+docker run --rm -p 3333:3333 \
+  -v vikunja-mcp-data:/data \
+  -e VIKUNJA_URL=https://todo.example.com/api/v1 \
+  -e TOKEN_ENCRYPTION_KEY=replace-with-random-secret \
+  -e IDENTITY_CLAIMS_SECRET=shared-contextforge-claims-secret \
+  -e VIKUNJA_WEBHOOK_SECRET=replace-with-random-secret \
+  -e VIKUNJA_MCP_WEBHOOK_URL=https://vikunja-mcp.example.com/webhooks/vikunja \
+  ghcr.io/willgriffin/vikunja-mcp:latest
+```
+
+Or run the built server directly:
+
 ```bash
 MCP_TRANSPORT=http \
 PORT=3333 \
-VIKUNJA_URL=https://tasks.example.com/api/v1 \
+VIKUNJA_URL=https://todo.example.com/api/v1 \
 TOKEN_ENCRYPTION_KEY=replace-with-random-secret \
 IDENTITY_CLAIMS_SECRET=shared-contextforge-claims-secret \
 VIKUNJA_WEBHOOK_SECRET=replace-with-random-secret \
 node dist/index.js
 ```
 
+HTTP mode exposes these endpoints:
+
+- `POST /mcp`, `GET /mcp`, `DELETE /mcp`: Streamable HTTP MCP endpoint for ContextForge gateway registration.
+- `GET /sse` and `POST /message?sessionId=...`: legacy MCP SSE transport for clients using SSE push.
+- `GET /healthz`: health probe.
+- `POST /webhooks/vikunja`: Vikunja webhook receiver. Enabled only when `VIKUNJA_WEBHOOK_SECRET` is configured.
+
 Required ContextForge mode environment:
 
 - `TOKEN_ENCRYPTION_KEY`: encrypts linked per-user Vikunja tokens in SQLite.
-- `IDENTITY_CLAIMS_SECRET`: verifies `X-Forwarded-User-Claims-Signature` from ContextForge.
+- `IDENTITY_CLAIMS_SECRET`: verifies `X-Forwarded-User-Claims-Signature` from ContextForge forwarded identity headers.
+- `CONTEXTFORGE_JWT_SECRET`: optional HS256 secret for verified ContextForge bearer JWT identity fallback.
 - `VIKUNJA_WEBHOOK_SECRET`: verifies Vikunja webhook deliveries.
 - `TOKEN_STORE_PATH`: optional SQLite path, default `/data/vikunja-mcp.sqlite`.
 - `VIKUNJA_MCP_WEBHOOK_URL`: optional URL registered in Vikunja project webhooks.
+- `VIKUNJA_POLL_INTERVAL_MS`: optional polling fallback interval, default `30000`.
+- `CONTEXTFORGE_IDENTITY_REQUIRED`: set to `false` only for local debugging. Defaults to required.
+- `CONTEXTFORGE_IDENTITY_SIGNATURE_REQUIRED`: set to `false` only for local debugging. Defaults to required for forwarded headers.
+
+ContextForge identity can arrive through signed forwarded headers, a verified ContextForge bearer JWT, or MCP `_meta.user`. Forwarded header mode uses `X-Forwarded-User-Id`, optional `X-Forwarded-User-Email`, groups/teams/roles/admin/full-name metadata, and `X-Forwarded-User-Claims-Signature`.
 
 ContextForge users use these tools:
 
@@ -128,6 +162,8 @@ ContextForge users use these tools:
 - `unlink_vikunja_token`: remove the linked token.
 - `watch_project_updates`: subscribe the current MCP session to project updates via webhooks plus polling fallback.
 - `unwatch_project_updates`: remove project update subscriptions.
+
+Live updates are sent as MCP logging notifications on the active MCP session with logger `vikunja.updates`. They are not exposed as a separate raw WebSocket endpoint. Each update includes project/task identifiers when available, event name, timestamp, source (`webhook` or `poll`), changed fields, Vikunja `doer`, and raw task/project data when the webhook includes it.
 
 ## Configuration
 
@@ -154,7 +190,7 @@ All logs are written to stderr to keep stdout reserved for MCP protocol communic
 
 ## Authentication Methods
 
-The Vikunja MCP server supports two authentication methods, each with different capabilities:
+The Vikunja MCP server supports stdio/global-token authentication and ContextForge per-user token linking:
 
 ### API Token Authentication (Default)
 
@@ -201,6 +237,31 @@ vikunja_auth.connect({
 - JWT tokens expire; you'll need to extract a new one when it expires
 - Token type is automatically detected based on format (no flag needed)
 - Some tools (users, export) are only available with JWT authentication
+
+### ContextForge Per-User Token Linking
+
+In HTTP mode behind ContextForge, users do not call `vikunja_auth.connect`. ContextForge supplies the user identity for each MCP request, and the server looks up that user's linked Vikunja token from encrypted SQLite storage.
+
+```typescript
+// Link the current ContextForge user to Vikunja
+link_vikunja_token({
+  token: "tk_your-vikunja-api-token"
+})
+
+// Optional: override the default VIKUNJA_URL for this linked token
+link_vikunja_token({
+  apiUrl: "https://todo.example.com/api/v1",
+  token: "tk_your-vikunja-api-token"
+})
+
+// Check link state without exposing the stored token
+vikunja_auth_status()
+
+// Remove the current user's linked token
+unlink_vikunja_token()
+```
+
+The token is validated before storage and never returned by status calls. All task, project, label, team, and webhook operations then run with the linked user's Vikunja token so Vikunja records the correct actor.
 
 ## Quick Start
 
@@ -250,6 +311,33 @@ vikunja_auth.status()
 // Disconnect and clean up resources
 vikunja_auth.disconnect()
 ```
+
+### ContextForge Live Updates
+
+When running in HTTP mode, connected ContextForge clients can subscribe to project updates for kanban-style workflows:
+
+```typescript
+// Subscribe the current MCP session to project updates
+watch_project_updates({
+  projectId: 42
+})
+
+// Skip webhook creation and use polling only
+watch_project_updates({
+  projectId: 42,
+  enableWebhook: false
+})
+
+// Remove one project subscription
+unwatch_project_updates({
+  projectId: 42
+})
+
+// Remove all project subscriptions for this MCP session
+unwatch_project_updates()
+```
+
+The server creates or reuses a Vikunja project webhook when the linked token has webhook permission and `VIKUNJA_MCP_WEBHOOK_URL` plus `VIKUNJA_WEBHOOK_SECRET` are configured. Polling is always active as a fallback because Vikunja webhook delivery is best-effort. Before broadcasting an update, the server rechecks that the linked token can still read the project.
 
 ### Task Management Examples
 
@@ -1033,6 +1121,22 @@ This standardized format ensures:
   - `status` - Check authentication status
   - `refresh` - Refresh authentication token
 
+### ContextForge User Linking & Updates ✅
+- `link_vikunja_token` - Link a Vikunja API/JWT token to the current ContextForge user
+  - Required: token
+  - Optional: apiUrl
+  - Validates the token before encrypting and storing it
+- `vikunja_auth_status` - Return whether the current ContextForge user has a linked Vikunja token
+  - Never returns the stored token
+  - Includes auth type, Vikunja username/user id, and updated timestamp when linked
+- `unlink_vikunja_token` - Delete the linked token for the current ContextForge user
+- `watch_project_updates` - Subscribe the current MCP session to project updates
+  - Required: projectId
+  - Optional: enableWebhook
+  - Uses webhooks when possible and polling as a fallback
+- `unwatch_project_updates` - Remove one project subscription or all subscriptions for the current MCP session
+  - Optional: projectId
+
 ### Task Management ✅
 - `vikunja_tasks` - Task operations (fully implemented)
   - `list` - List tasks with filters
@@ -1269,6 +1373,8 @@ This standardized format ensures:
    - **Label operations**: May fail with authentication errors on some server configurations
    - **Assignee operations**: May fail with authentication errors when creating/updating tasks with assignees
    - The server provides detailed error messages when these issues occur, suggesting workarounds
+5. **ContextForge HTTP mode**: The current implementation is intended to run as a single replica because linked tokens are stored in SQLite and update subscriptions are held in memory.
+6. **Live updates**: Update notifications require an active MCP session. Webhook delivery is backed by polling, but polling reports a project-level `project.tasks.changed` event rather than field-level diffs.
 
 ## Security & Performance Features
 
@@ -1276,9 +1382,13 @@ This standardized format ensures:
 - **Zod Schema Validation**: Enterprise-grade input validation with comprehensive type checking
 - **DoS Protection**: Input sanitization, length limits, and character allowlisting
 - **Credential Protection**: Automatic masking of sensitive tokens and URLs in logs and error messages
+- **Encrypted Linked Tokens**: ContextForge user tokens are encrypted at rest with `TOKEN_ENCRYPTION_KEY`
+- **Signed Identity Propagation**: ContextForge forwarded claims are verified before user-scoped operations
+- **Webhook Signature Verification**: Vikunja update webhooks require a shared HMAC secret
 - **Entity Resolution Service**: Robust label and user mapping with defensive error handling for malformed API responses
 - **Rate Limiting**: Configurable request rate limits and payload size restrictions to prevent DoS attacks
 - **Memory Protection**: Pagination limits and memory usage monitoring to prevent resource exhaustion
+- **Authorization Rechecks for Updates**: Live update broadcasts recheck project access before notifying subscribers
 - **Error Handling**: Structured error responses that avoid exposing sensitive system information
 
 ### Performance Optimizations
@@ -1289,6 +1399,7 @@ This standardized format ensures:
 - **Thread-Safe Client Management**: Async-only ClientContext API eliminates race conditions in concurrent scenarios
 - **Opossum Circuit Breaker**: Production-ready retry logic with automatic failure detection and recovery
 - **Simplified Storage**: In-memory filter storage with 90% reduced complexity and overhead
+- **Webhook + Polling Update Path**: Webhook delivery is used when available, with polling fallback for reliability
 
 ## Configuration
 
@@ -1301,7 +1412,7 @@ The server supports various configuration options through environment variables:
 # Vikunja instance URL (required)
 VIKUNJA_URL=https://your-vikunja-instance.com/api/v1
 
-# Authentication token (required)
+# Authentication token (required for stdio/global-token mode)
 VIKUNJA_API_TOKEN=your-api-token
 
 # Enable debug logging (default: false)
@@ -1309,6 +1420,32 @@ DEBUG=true
 
 # Set log level (error, warn, info, debug)
 LOG_LEVEL=debug
+```
+
+#### ContextForge HTTP Configuration
+```bash
+# Enable Streamable HTTP mode
+MCP_TRANSPORT=http
+HOST=0.0.0.0
+PORT=3333
+
+# Default Vikunja API URL used when users link tokens without apiUrl
+VIKUNJA_URL=https://todo.example.com/api/v1
+
+# SQLite token store and encryption
+TOKEN_STORE_PATH=/data/vikunja-mcp.sqlite
+TOKEN_ENCRYPTION_KEY=replace-with-at-least-16-characters
+
+# ContextForge identity verification
+IDENTITY_CLAIMS_SECRET=shared-contextforge-claims-secret
+CONTEXTFORGE_JWT_SECRET=optional-contextforge-jwt-secret
+CONTEXTFORGE_IDENTITY_REQUIRED=true
+CONTEXTFORGE_IDENTITY_SIGNATURE_REQUIRED=true
+
+# Live updates
+VIKUNJA_WEBHOOK_SECRET=shared-vikunja-webhook-secret
+VIKUNJA_MCP_WEBHOOK_URL=https://vikunja-mcp.example.com/webhooks/vikunja
+VIKUNJA_POLL_INTERVAL_MS=30000
 ```
 
 #### Security & Performance Configuration
@@ -1347,13 +1484,14 @@ For detailed rate limiting configuration, see [`docs/RATE_LIMITING.md`](docs/RAT
 - [x] ✅ **Security hardening** - Comprehensive vulnerability fixes implemented
 - [x] ✅ **Performance optimization** - Hybrid filtering and memory protection
 - [x] ✅ **Error handling** - Centralized error utilities and structured responses
-- [x] ✅ **Test coverage** - 98.91% function coverage achieved
+- [x] ✅ **Node 24 test baseline** - CI, coverage, lint, typecheck, and build run on Node 24
 - [x] ✅ **Architecture simplification** - 90% code reduction with enhanced maintainability
 - [x] ✅ **Production-ready resilience** - Opossum circuit breaker and Zod validation
-- [ ] Add webhook subscriptions for real-time updates
+- [x] ✅ **ContextForge integration** - Streamable HTTP, SSE, signed identity passthrough, and per-user token linking
+- [x] ✅ **Live project updates** - Vikunja webhook receiver with polling fallback and authorized subscriber broadcasts
 - [ ] Add caching for frequently accessed data
 - [ ] Add integration tests with real Vikunja instance
-- [ ] Implement persistent storage for saved filters (optional - in-memory works well)
+- [ ] Implement persistent storage for saved filters (linked user tokens already use persistent SQLite storage)
 
 ## Contributing
 

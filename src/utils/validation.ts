@@ -89,6 +89,7 @@ export function sanitizeString(value: string): string {
     /<\/svg>/gi,
     /<style[^>]*>/gi,
     /<\/style>/gi,
+    /<\/?[a-z][^>]*>/gi,
     /<img[^>]*on[^>]*>/gi,
     /<div[^>]*on[^>]*>/gi,
     /<a[^>]*on[^>]*>/gi,
@@ -165,6 +166,8 @@ export function sanitizeString(value: string): string {
     /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC|UNION|EXECUTE|TRUNCATE)\b)/gi,
     /(\b(OR|AND)\s+\d+\s*=\s*\d+)/gi,
     /(\b(OR|AND)\s+['"].*['"]\s*=\s*['"].*['"])/gi,
+    /(\b(OR|AND)\s*['"][^'"]*['"]\s*=\s*['"][^'"]*['"])/gi,
+    /(\b(OR|AND)\b\s+['"]?\w+['"]?\s*=\s*['"]?\w+)/gi,
     /(\b(WAITFOR\s+DELAY|SLEEP\s*\(|BENCHMARK\s*\(|DBMS_PIPE\.RECEIVE_MESSAGE)\b)/gi,
     /(--|#|\/\*|\*\/)/gi,  // SQL comments
     /(\b(INFORMATION_SCHEMA|SYS|MASTER|MSDB|MYSQL|PG_CATALOG)\b)/gi,
@@ -193,6 +196,7 @@ export function sanitizeString(value: string): string {
 
     // NoSQL injection patterns
     /(\$\w+\s*:)/gi,  // MongoDB operators like $gt, $lt, $where
+    /(["']\$\w+["']\s*:)/gi,
     /(\{\s*\$where\s*:)/gi,
     /(\{\s*\$ne\s*:)/gi,
     /(\{\s*\$gt\s*:)/gi,
@@ -595,11 +599,8 @@ export function validateFilterExpression(expression: unknown): FilterExpression 
  */
 export function safeJsonStringify(obj: unknown): string {
   try {
-    // Validate the object structure first - this will throw for invalid structures
-    const validated = validateFilterExpression(obj);
-
     // Create a safe copy to prevent prototype pollution
-    const safeObj = createSafeObjectCopy(validated);
+    const safeObj = createSafeObjectCopy(obj);
 
     // Check for circular references before sanitizing
     if (safeObj === null) {
@@ -610,7 +611,7 @@ export function safeJsonStringify(obj: unknown): string {
     const sanitizedObj = sanitizeObjectStrings(safeObj);
 
     const jsonString = JSON.stringify(sanitizedObj);
-    return jsonString; // No need to sanitize the JSON string itself since we sanitized values
+    return jsonString ?? 'null'; // Top-level undefined, functions, and symbols are not valid JSON values.
   } catch (error) {
     if (error instanceof MCPError) {
       throw error; // Re-throw MCPError as-is
