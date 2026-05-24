@@ -51,8 +51,8 @@ describe('Circuit Breaker Integration with Retry Logic', () => {
 
     const results = await Promise.all(promises);
 
-    // At least one should be blocked by circuit breaker
-    expect(results.some(r => r.includes('Circuit breaker') && r.includes('OPEN'))).toBe(true);
+    // At least one should be blocked by the open opossum circuit breaker
+    expect(results.some(r => /breaker is open/i.test(r))).toBe(true);
 
     // Verify the operation was indeed blocked (limited calls)
     expect(mockOperation).toHaveBeenCalledTimes(5); // Opened after 5 failures (default threshold)

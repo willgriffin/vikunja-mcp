@@ -13,7 +13,7 @@ export type FilterOperator = '=' | '!=' | '>' | '>=' | '<' | '<=' | 'like' | 'LI
 /**
  * Logical operators for combining conditions
  */
-export type LogicalOperator = '&&' | '||';
+export type LogicalOperator = '&&' | '||' | 'AND' | 'OR';
 
 /**
  * Available fields for filtering tasks

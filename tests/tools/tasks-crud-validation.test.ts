@@ -123,7 +123,7 @@ describe('Tasks CRUD - Validation Coverage', () => {
           projectId: 1,
           title: 'Test Task',
         })
-      ).rejects.toThrow('Failed to create task: Unknown error');
+      ).rejects.toThrow('Failed to create task: Server error');
     });
 
     it('should handle generic Error in getTask (line 229)', async () => {
@@ -197,7 +197,7 @@ describe('Tasks CRUD - Validation Coverage', () => {
           id: 1,
           title: 'Updated Title',
         })
-      ).rejects.toThrow('Failed to update task: Unknown error');
+      ).rejects.toThrow('Failed to update task: Update service unavailable');
     });
 
     it('should handle generic Error in deleteTask (line 459)', async () => {

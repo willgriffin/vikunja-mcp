@@ -67,7 +67,7 @@ const FilterOperatorSchema = z.enum([
   '=', '!=', '>', '>=', '<', '<=', 'like', 'LIKE', 'in', 'not in'
 ]);
 
-const LogicalOperatorSchema = z.enum(['&&', '||']);
+const LogicalOperatorSchema = z.enum(['&&', '||', 'AND', 'OR']);
 
 const FilterValueSchema = z.union([
   z.string(),
@@ -93,6 +93,40 @@ const FilterExpressionSchema = z.object({
   operator: LogicalOperatorSchema.optional(),
 }).strict();
 
+function containsHtmlLikeTag(input: string): boolean {
+  for (let index = 0; index < input.length; index++) {
+    if (input.charCodeAt(index) !== 60) {
+      continue;
+    }
+
+    let nameStart = index + 1;
+    if (input.charCodeAt(nameStart) === 47) {
+      nameStart++;
+    }
+
+    const firstNameChar = input.charCodeAt(nameStart);
+    const isAsciiLetter =
+      (firstNameChar >= 65 && firstNameChar <= 90) ||
+      (firstNameChar >= 97 && firstNameChar <= 122);
+
+    if (!isAsciiLetter) {
+      continue;
+    }
+
+    for (let cursor = nameStart + 1; cursor < input.length; cursor++) {
+      const charCode = input.charCodeAt(cursor);
+      if (charCode === 60) {
+        break;
+      }
+      if (charCode === 62) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 /**
  * Security validation functions
  */
@@ -101,6 +135,9 @@ export const SecurityValidator = {
    * Validates input string contains only allowed characters
    */
   validateAllowedChars(input: string): boolean {
+    if (/[;`^~{}[\]]/.test(input) || containsHtmlLikeTag(input)) {
+      return false;
+    }
     return ALLOWED_CHARS.test(input);
   },
 
@@ -128,6 +165,14 @@ export const SecurityValidator = {
       };
     }
     return { isValid: true };
+  },
+
+  validateField(field: string): boolean {
+    return FilterFieldSchema.safeParse(field).success || SIMPLE_FILTER_FIELDS.has(field);
+  },
+
+  validateOperator(operator: string): boolean {
+    return FilterOperatorSchema.safeParse(operator).success;
   }
 };
 
@@ -198,7 +243,7 @@ function parseQuotedString(state: ParseState): string | null {
 
     // Prevent extremely long quoted values
     if (value.length > MAX_VALUE_LENGTH) {
-      return null;
+      throw new Error('Value too long');
     }
   }
 
@@ -296,6 +341,18 @@ function parseLogicalOperator(state: ParseState): LogicalOperator | null {
     state.position += 2;
     return '||';
   }
+
+  const remaining = state.input.substring(state.position);
+  const wordOperator = remaining.match(/^(AND|OR)(?=\s|\(|$)/i);
+  if (wordOperator) {
+    const operator = wordOperator[1];
+    if (!operator) {
+      return null;
+    }
+    state.position += operator.length;
+    return operator.toUpperCase() as LogicalOperator;
+  }
+
   return null;
 }
 
@@ -373,11 +430,17 @@ function parseCondition(state: ParseState): FilterCondition | null {
   if (field === null) {
     return null;
   }
+  if (!SecurityValidator.validateField(field)) {
+    throw new Error('Invalid field');
+  }
 
   skipWhitespace(state);
   const operator = parseOperator(state);
   if (operator === null) {
     throw new Error('Expected operator');
+  }
+  if (!SecurityValidator.validateOperator(operator)) {
+    throw new Error('Invalid operator');
   }
 
   skipWhitespace(state);
@@ -529,6 +592,17 @@ export function parseFilterString(filterStr: string): ParseResult {
     };
   }
 
+  const lengthValidation = SecurityValidator.validateLength(filterStr);
+  if (!lengthValidation.isValid) {
+    return {
+      expression: null,
+      error: {
+        message: lengthValidation.error || 'Filter string too long',
+        position: 0,
+      },
+    };
+  }
+
   // Security validation
   if (!SecurityValidator.validateAllowedChars(filterStr)) {
     return {
@@ -537,17 +611,6 @@ export function parseFilterString(filterStr: string): ParseResult {
         message: 'Filter string contains invalid characters',
         position: 0,
         context: 'Only alphanumeric characters, common punctuation, and international characters are allowed'
-      },
-    };
-  }
-
-  const lengthValidation = SecurityValidator.validateLength(filterStr);
-  if (!lengthValidation.isValid) {
-    return {
-      expression: null,
-      error: {
-        message: lengthValidation.error || 'Filter string too long',
-        position: 0,
       },
     };
   }
@@ -666,9 +729,7 @@ function validateFieldTypeAndValue(field: FilterField, operator: FilterOperator,
 
   // Value type validation
   if (fieldType === 'boolean') {
-    if (typeof value === 'string' && (value === 'true' || value === 'false')) {
-      // String boolean values are acceptable
-    } else if (typeof value !== 'boolean') {
+    if (typeof value !== 'boolean') {
       errors.push(`Field "${field}" requires a boolean value`);
     }
   }
@@ -748,10 +809,15 @@ export function validateCondition(condition: FilterCondition): string[] {
   const result = FilterConditionSchema.safeParse(condition);
   if (!result.success) {
     const errors = result.error.errors.map(e => e.message);
+    const fieldEnumError = result.error.errors.some(e => e.path.includes('field') && e.message.includes('enum value'));
+    const operatorEnumError = result.error.errors.some(e => e.path.includes('operator') && e.message.includes('enum value'));
 
-    // Convert Zod enum error to more user-friendly message
-    if (errors.some(e => e.includes('enum value'))) {
-      return ['Invalid field name'];
+    if (fieldEnumError) {
+      return ['Invalid enum value: Invalid field name'];
+    }
+
+    if (operatorEnumError) {
+      return ['Invalid enum value'];
     }
 
     return errors;
@@ -802,6 +868,13 @@ export function validateFilterExpression(
       0,
     );
 
+    const maxConditions = (config as FilterValidationConfig & { maxConditions?: number }).maxConditions;
+    if (maxConditions !== undefined && totalConditions > maxConditions) {
+      errors.unshift(`Too many conditions. Maximum allowed is ${maxConditions}, got ${totalConditions}`);
+    } else if (maxConditions === undefined && totalConditions > 50) {
+      errors.unshift(`Too many conditions. Maximum allowed is 50, got ${totalConditions}`);
+    }
+
     const threshold = config.performanceWarningThreshold ?? 10;
     if (totalConditions > threshold) {
       warnings.push(
@@ -831,7 +904,7 @@ export function conditionToString(condition: FilterCondition): string {
   let valueStr: string;
   if (Array.isArray(value)) {
     valueStr = value.join(', ');
-  } else if (typeof value === 'string' && operator === 'like') {
+  } else if (typeof value === 'string') {
     valueStr = `"${value}"`;
   } else if (typeof value === 'boolean') {
     valueStr = value.toString();
@@ -851,9 +924,8 @@ export function conditionToString(condition: FilterCondition): string {
  */
 export function groupToString(group: FilterGroup): string {
   const conditions = group.conditions.map(conditionToString);
-  return conditions.length > 1
-    ? `(${conditions.join(` ${group.operator} `)})`
-    : conditions[0] || '';
+  const operator = group.operator === '&&' ? 'AND' : group.operator === '||' ? 'OR' : group.operator;
+  return conditions.join(` ${operator} `);
 }
 
 /**
@@ -861,8 +933,238 @@ export function groupToString(group: FilterGroup): string {
  */
 export function expressionToString(expression: FilterExpression): string {
   const groups = expression.groups.map(groupToString);
-  const operator = expression.operator || '&&';
+  const operator = expression.operator === '&&'
+    ? 'AND'
+    : expression.operator === '||'
+      ? 'OR'
+      : expression.operator || 'AND';
   return groups.join(` ${operator} `);
+}
+
+export interface SimpleFilter {
+  field: string;
+  operator: FilterOperator;
+  value: unknown;
+}
+
+const SIMPLE_FILTER_FIELDS = new Set([
+  'id',
+  'project_id',
+  'done',
+  'priority',
+  'percent_done',
+  'percentDone',
+  'due_date',
+  'dueDate',
+  'labels',
+  'assignees',
+  'created',
+  'updated',
+  'title',
+  'description',
+]);
+
+const SIMPLE_FILTER_OPERATORS: FilterOperator[] = ['not in', '>=', '<=', '!=', '=', '>', '<', 'like', 'LIKE', 'in'];
+const DANGEROUS_SIMPLE_VALUE_PATTERN = /(?:__proto__|constructor|prototype|function\s*\(|eval\s*\(|=>|<script|<\/|[{};$`])/i;
+
+function parseSimpleValue(rawValue: string): unknown {
+  const value = rawValue.trim();
+
+  if (value.length > MAX_VALUE_LENGTH || DANGEROUS_SIMPLE_VALUE_PATTERN.test(value)) {
+    throw new Error('Invalid simple filter value');
+  }
+
+  if (value.startsWith('[')) {
+    if (value.length > MAX_VALUE_LENGTH) {
+      throw new Error('Invalid simple filter value');
+    }
+
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed.length > 100) {
+      throw new Error('Invalid simple filter array');
+    }
+
+    for (const item of parsed) {
+      if (
+        item !== null &&
+        typeof item !== 'string' &&
+        typeof item !== 'number' &&
+        typeof item !== 'boolean'
+      ) {
+        throw new Error('Invalid simple filter array item');
+      }
+      if (typeof item === 'string' && DANGEROUS_SIMPLE_VALUE_PATTERN.test(item)) {
+        throw new Error('Invalid simple filter array item');
+      }
+      if (typeof item === 'number' && (!Number.isFinite(item) || Math.abs(item) > Number.MAX_SAFE_INTEGER)) {
+        throw new Error('Invalid simple filter array item');
+      }
+    }
+
+    return parsed;
+  }
+
+  if (value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1);
+  }
+
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (value === 'null') return null;
+
+  const numericValue = Number(value);
+  if (value !== '' && Number.isFinite(numericValue)) {
+    return numericValue;
+  }
+
+  return value;
+}
+
+export function parseSimpleFilter(filter: string): SimpleFilter | null {
+  if (typeof filter !== 'string' || filter.trim() === '' || filter.length > MAX_VALUE_LENGTH) {
+    return null;
+  }
+
+  if (!ALLOWED_CHARS.test(filter) || DANGEROUS_SIMPLE_VALUE_PATTERN.test(filter)) {
+    return null;
+  }
+
+  const operatorPattern = SIMPLE_FILTER_OPERATORS.map(op => op.replace(/\s/g, '\\s+')).join('|');
+  const match = filter.trim().match(new RegExp(`^([A-Za-z_][A-Za-z0-9_]*)\\s+(${operatorPattern})\\s+(.+)$`, 'i'));
+  if (!match) {
+    return null;
+  }
+
+  const [, field = '', operator = '', rawValue = ''] = match;
+  const normalizedOperator = operator.toLowerCase() as FilterOperator;
+  if (
+    !SecurityValidator.validateField(field) ||
+    !SecurityValidator.validateOperator(normalizedOperator) ||
+    !SIMPLE_FILTER_OPERATORS.includes(normalizedOperator)
+  ) {
+    return null;
+  }
+
+  try {
+    return {
+      field,
+      operator: normalizedOperator,
+      value: parseSimpleValue(rawValue),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getTaskFieldValue(task: Record<string, unknown>, field: string): unknown {
+  if (field === 'dueDate') return Object.prototype.hasOwnProperty.call(task, 'dueDate') ? task.dueDate : task.due_date;
+  if (field === 'due_date') return Object.prototype.hasOwnProperty.call(task, 'due_date') ? task.due_date : task.dueDate;
+  if (field === 'percentDone') return Object.prototype.hasOwnProperty.call(task, 'percentDone') ? task.percentDone : task.percent_done;
+  if (field === 'percent_done') return Object.prototype.hasOwnProperty.call(task, 'percent_done') ? task.percent_done : task.percentDone;
+  return task[field];
+}
+
+function toComparableString(value: unknown): string {
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  try {
+    return JSON.stringify(value) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string' && value.trim() !== '') {
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? numericValue : null;
+  }
+
+  return null;
+}
+
+function compareOrderedValues(fieldValue: unknown, filterValue: unknown): number {
+  const fieldNumber = toFiniteNumber(fieldValue);
+  const filterNumber = toFiniteNumber(filterValue);
+
+  if (fieldNumber !== null && filterNumber !== null) {
+    if (fieldNumber === filterNumber) return 0;
+    return fieldNumber > filterNumber ? 1 : -1;
+  }
+
+  const fieldString = toComparableString(fieldValue);
+  const filterString = toComparableString(filterValue);
+
+  if (fieldString === filterString) return 0;
+  return fieldString > filterString ? 1 : -1;
+}
+
+export function applyClientSideFilter<T extends Record<string, unknown>>(
+  tasks: T[],
+  filter: SimpleFilter | null,
+): T[] {
+  if (!filter) {
+    return tasks;
+  }
+
+  return tasks.filter(task => {
+    const fieldValue = getTaskFieldValue(task, filter.field);
+    const filterValue = filter.value;
+
+    switch (filter.operator) {
+      case '=':
+        return fieldValue === filterValue;
+      case '!=':
+        return fieldValue !== filterValue;
+      case '>':
+        if (fieldValue === null || fieldValue === undefined) return false;
+        return compareOrderedValues(fieldValue, filterValue) > 0;
+      case '>=':
+        if (fieldValue === null || fieldValue === undefined) return false;
+        return compareOrderedValues(fieldValue, filterValue) >= 0;
+      case '<':
+        if (fieldValue === null || fieldValue === undefined) return false;
+        return compareOrderedValues(fieldValue, filterValue) < 0;
+      case '<=':
+        if (fieldValue === null || fieldValue === undefined) return false;
+        return compareOrderedValues(fieldValue, filterValue) <= 0;
+      case 'like':
+      case 'LIKE':
+        return toComparableString(fieldValue).toLowerCase().includes(toComparableString(filterValue).toLowerCase());
+      case 'in':
+        if (!Array.isArray(filterValue)) return false;
+        if (Array.isArray(fieldValue)) {
+          return fieldValue.some(item => filterValue.includes(item));
+        }
+        return filterValue.includes(fieldValue);
+      case 'not in':
+        if (!Array.isArray(filterValue)) return false;
+        if (Array.isArray(fieldValue)) {
+          return !fieldValue.some(item => filterValue.includes(item));
+        }
+        return !filterValue.includes(fieldValue);
+      default:
+        return true;
+    }
+  });
 }
 
 /**

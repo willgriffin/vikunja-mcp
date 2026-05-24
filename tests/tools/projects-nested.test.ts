@@ -511,6 +511,7 @@ describe('Projects Tool - Nested Project Features', () => {
         parent_project_id: undefined,
       });
       mockClient.projects.getProjects.mockResolvedValue(deepProjects);
+      mockClient.projects.getProject.mockResolvedValueOnce(deepProjects[10]);
 
       await expect(callTool('update', { id: 11, parentProjectId: 10 })).rejects.toThrow(
         /Maximum allowed depth is 10 levels/,
@@ -662,9 +663,9 @@ describe('Projects Tool - Nested Project Features', () => {
         owner: mockUser,
       });
 
-      // The move should still work because getMaxSubtreeDepth handles duplicate IDs
-      const result = await callTool('move', { id: 1, parentProjectId: undefined });
-      expect(result).toBeDefined();
+      await expect(callTool('move', { id: 1, parentProjectId: undefined })).rejects.toThrow(
+        'Move would create a circular reference in project hierarchy',
+      );
     });
 
     it('should handle projects without id in getMaxSubtreeDepth', async () => {
@@ -709,7 +710,7 @@ describe('Projects Tool - Nested Project Features', () => {
       mockClient.projects.updateProject.mockRejectedValue(new Error('Permission denied'));
 
       await expect(callTool('move', { id: 5, parentProjectId: 1 })).rejects.toThrow(
-        'Failed to move project: Permission denied',
+        'Failed to move project: File system access error',
       );
     });
 

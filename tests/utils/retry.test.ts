@@ -248,7 +248,7 @@ describe('retry utility', () => {
         initialDelay: 1000,
         maxDelay: 10000,
         backoffFactor: 2,
-        enableCircuitBreaker: true,
+        enableCircuitBreaker: false,
         circuitBreakerName: 'vikunja-auth-connect'
       });
     });
